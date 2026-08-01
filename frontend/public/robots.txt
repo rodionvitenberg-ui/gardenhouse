@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://fathersgarden.kg/sitemap.xml
+Sitemap: https://maintest.site/gardenhouse/sitemap.xml

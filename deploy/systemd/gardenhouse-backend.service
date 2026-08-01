@@ -1,0 +1,24 @@
+[Unit]
+Description=GardenHouse Django API (Gunicorn)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=gardenhouse
+Group=gardenhouse
+WorkingDirectory=/var/www/gardenhouse/backend
+EnvironmentFile=/var/www/gardenhouse/backend/.env
+ExecStart=/var/www/gardenhouse/backend/venv/bin/gunicorn core.wsgi:application --bind 127.0.0.1:8001 --workers 3 --timeout 120
+Restart=always
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/www/gardenhouse/backend/media /var/www/gardenhouse/backend/staticfiles
+
+[Install]
+WantedBy=multi-user.target

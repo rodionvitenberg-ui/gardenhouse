@@ -14,6 +14,21 @@ DEBUG = os.getenv('DJANGO_DEBUG', 'False') == 'True'
 
 ALLOWED_HOSTS = os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost').split(',')
 
+# When the site is served from a sub-path (e.g. https://maintest.site/gardenhouse),
+# Django must generate URLs (admin redirects, DRF pagination) with that prefix.
+# Leave empty when serving from the domain root.
+FORCE_SCRIPT_NAME = os.getenv('DJANGO_FORCE_SCRIPT_NAME') or None
+
+# Trust the X-Forwarded-Proto header set by nginx so SECURE_SSL_REDIRECT
+# doesn't redirect HTTPS → HTTP in an endless loop behind the proxy.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Origins allowed to submit unsafe (POST/PUT/DELETE) requests.
+CSRF_TRUSTED_ORIGINS = os.getenv(
+    'DJANGO_CSRF_TRUSTED_ORIGINS', ''
+).split(',')
+CSRF_TRUSTED_ORIGINS = [origin for origin in CSRF_TRUSTED_ORIGINS if origin]
+
 ROOT_URLCONF = 'core.urls'
 
 WSGI_APPLICATION = 'core.wsgi.application'

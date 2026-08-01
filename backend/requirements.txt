@@ -1,0 +1,29 @@
+# Django core
+Django==6.0.7
+asgiref==3.11.1
+
+# WSGI server
+gunicorn==23.0.0
+
+# REST framework
+djangorestframework==3.17.1
+
+# CORS
+django-cors-headers==4.9.0
+
+# Translation (django-modeltranslation)
+django-modeltranslation==0.20.3
+
+# Database driver
+psycopg2-binary==2.9.12
+
+# Images
+pillow==12.3.0
+
+# Environment variables
+python-dotenv==1.2.2
+dotenv==0.9.9
+
+# SQL parsing / misc
+sqlparse==0.5.5
+typing_extensions==4.16.0

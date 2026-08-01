@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 
-const BASE_URL = "https://gardenhouse.kg";
+const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001/api";
 
 type Locale = "en" | "ru";
 
@@ -16,14 +17,18 @@ const staticPaths: { path: string; priority: number; changeFrequency: MetadataRo
   { path: "/privacy", priority: 0.3, changeFrequency: "yearly" },
 ];
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001/api";
-
 /** Fetch slugs from Django API. Falls back to empty if the API is unreachable. */
 async function fetchSlugs(endpoint: string): Promise<string[]> {
   try {
     const res = await fetch(`${API_URL}/${endpoint}/`, {
       next: { revalidate: 3600 },
-      headers: { "Accept-Language": "en" },
+      headers: {
+        "Accept-Language": "en",
+        // Django runs with SECURE_SSL_REDIRECT=True in production. This header
+        // lets the internal (plain-HTTP) request to Gunicorn be seen as secure,
+        // avoiding a redirect loop on sitemap data fetching.
+        "X-Forwarded-Proto": "https",
+      },
     });
     if (!res.ok) return [];
     const data = await res.json();
