@@ -128,7 +128,12 @@ EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD') or ''
 
 # --- Security (production hardening) ---
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    # Behind nginx the HTTP→HTTPS redirect is performed by nginx itself
+    # (certbot --redirect). Leaving the Django-level redirect ON can cause
+    # ERR_TOO_MANY_REDIRECTS whenever the proxy chain fails to forward
+    # X-Forwarded-Proto: https, because Django only ever sees the internal
+    # plain-HTTP connection to Gunicorn. Keep OFF in production.
+    SECURE_SSL_REDIRECT = os.getenv('DJANGO_SECURE_SSL_REDIRECT', 'True') == 'True'
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True

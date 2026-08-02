@@ -83,6 +83,14 @@ fi
 chmod 600 "${BACKEND_ENV}"
 chown "${APP_USER}":"${APP_USER}" "${BACKEND_ENV}"
 
+# Ensure the SSL redirect flag is present (False behind nginx) even when the
+# .env already existed — Django would otherwise redirect in an endless loop.
+if ! grep -q "^DJANGO_SECURE_SSL_REDIRECT=" "${BACKEND_ENV}"; then
+    printf 'DJANGO_SECURE_SSL_REDIRECT=False\n' >> "${BACKEND_ENV}"
+    chown "${APP_USER}":"${APP_USER}" "${BACKEND_ENV}"
+    echo "  Added DJANGO_SECURE_SSL_REDIRECT=False to ${BACKEND_ENV}"
+fi
+
 # Ensure the PostgreSQL role exists and the password stored in .env is real
 # (not a placeholder) and in sync with the role.
 ROLE_EXISTS="$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER_EXPECTED}'" 2>/dev/null | tr -d ' ' || echo '')"
