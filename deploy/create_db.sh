@@ -66,7 +66,7 @@ if grep -q "^DB_PASSWORD=" "${ENV_FILE}"; then
 else
     printf '\n# --- Database (managed by create_db.sh) ---\nDB_PASSWORD=%s\n' "${DB_PASSWORD}" >> "${ENV_FILE}"
 fi
-chown -R gardenhouse:gardenhouse "${APP_DIR}"
+chown -R maintest:maintest "${APP_DIR}"
 
 echo ""
 echo "=== Database ready ==="

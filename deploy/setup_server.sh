@@ -14,7 +14,7 @@
 set -euo pipefail
 
 APP_NAME="gardenhouse"
-APP_USER="gardenhouse"
+APP_USER="maintest"
 APP_DIR="/var/www/${APP_NAME}"
 DOMAIN="maintest.site"
 SERVER_IP="193.181.216.124"

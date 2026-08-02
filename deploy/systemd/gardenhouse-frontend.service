@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=gardenhouse
-Group=gardenhouse
+User=maintest
+Group=maintest
 WorkingDirectory=/var/www/gardenhouse/frontend
 EnvironmentFile=/var/www/gardenhouse/frontend/.env.production
 Environment=NODE_ENV=production
