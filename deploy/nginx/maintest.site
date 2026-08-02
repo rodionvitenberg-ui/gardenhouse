@@ -1,0 +1,93 @@
+# /etc/nginx/sites-available/maintest.site
+# Nginx — front-контроллер: HTTPS, /gardenhouse → Next.js, /gardenhouse/api|admin|media → Django.
+
+# Перенаправление HTTP → HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name maintest.site www.maintest.site;
+    return 301 https://maintest.site$request_uri;
+}
+
+# Основной HTTPS-сервер
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name maintest.site www.maintest.site;
+
+    # --- TLS (должны быть созданы certbot'ом перед активацией) ---
+    ssl_certificate     /etc/letsencrypt/live/maintest.site/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/maintest.site/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    # --- Логи ---
+    access_log /var/log/nginx/maintest.site.access.log;
+    error_log  /var/log/nginx/maintest.site.error.log;
+
+    # --- Статика и медиа Next.js (Next.js сам раздаёт static с префиксом /gardenhouse/_next/static) ---
+    # Статические файлы отдаём с длинным кэшем, т.к. Next.js добавляет hash в имена.
+    location ~* ^/gardenhouse/_next/static/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options "nosniff";
+    }
+
+    # --- API Django (без CORS, т.к. запросы идут на тот же origin /gardenhouse/api) ---
+    location /gardenhouse/api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # --- Админка Django ---
+    location /gardenhouse/admin/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # --- Медиа Django (файлы, загруженные через админку) ---
+    location /gardenhouse/media/ {
+        alias /home/maintest/gardenhouse/backend/media/;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        add_header X-Content-Type-Options "nosniff";
+    }
+
+    # --- Всё остальное под /gardenhouse → Next.js (включая статику, страницы, middleware) ---
+    location /gardenhouse {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 60s;
+        proxy_buffering off;
+    }
+
+    # --- Корень домена: редирект на русскую локаль сайта ---
+    location = / {
+        return 301 https://maintest.site/gardenhouse/ru;
+    }
+
+    # --- Безопасность (заголовки) ---
+    add_header X-Content-Type-Options "nosniff";
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header Referrer-Policy "strict-origin-when-cross-origin";
+}

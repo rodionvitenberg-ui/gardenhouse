@@ -5,373 +5,166 @@
 
 ---
 
-## Что такое Docker и зачем он нужен
+## Архитектура проекта
+
+Монорепозиторий из двух окружений:
+
+```
+gardenhouse/
+├── backend/                  # Django REST API (Python)
+│   ├── core/                 # настройки, URL, WSGI
+│   ├── shop/                 # каталог товаров, заказы
+│   ├── guests/               # дома, галерея, бронирования
+│   ├── journal/              # журнал садовода
+│   ├── scripts/setup_db.sh   # инициализация PostgreSQL из .env
+│   └── requirements.txt
+├── frontend/                 # Next.js (TypeScript, Tailwind, next-intl)
+│   ├── src/app/[locale]/     # страницы с локалями ru/en
+│   ├── src/components/       # компоненты по Design System Raus
+│   ├── src/lib/api.ts        # axios-клиент к Django API
+│   └── next.config.ts        # basePath /gardenhouse, standalone
+├── deploy/                   # файлы деплоя на сервер (см. deploy/DEPLOY.md)
+└── README.md
+```
+
+Фронтенд и бэкенд изолированы: общение только через REST API. Django отдаёт JSON по `/api/`, Next.js рендерит страницы и ходит к API через axios.
+
+---
+
+## Деплой на сервер (актуальная инструкция)
+
+**Подробная инструкция с объяснением каждого шага: [`deploy/DEPLOY.md`](deploy/DEPLOY.md)**
+
+Кратко:
+
+```bash
+# На сервере, от пользователя с sudo:
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y curl git wget build-essential software-properties-common
+sudo apt install -y python3 python3-venv python3-pip python3-dev libpq-dev \
+    nginx certbot python3-certbot-nginx postgresql postgresql-contrib
+
+# Клонирование и запуск деплоя:
+cd ~
+git clone https://github.com/rodionvitenberg-ui/gardenhouse.git
+cd gardenhouse
+./deploy/deploy.sh --install-services
+```
+
+Скрипт автоматически:
+- создаёт виртуальное окружение Python и ставит зависимости бэкенда;
+- создаёт базу данных и роль через `backend/scripts/setup_db.sh` (читает пароль из `.env`);
+- применяет миграции и сиды;
+- собирает Next.js с basePath `/gardenhouse` в standalone-режиме;
+- устанавливает systemd-сервисы `gardenhouse-backend` (Gunicorn :8000) и `gardenhouse-frontend` (Next.js :3000);
+- настраивает nginx (`/gardenhouse` → Next.js, `/gardenhouse/api|admin` → Django, `/gardenhouse/media` → файлы);
+- выпускает SSL-сертификат через certbot;
+- перезапускает сервисы.
+
+**Что происходит на сервере:**
+
+```
+Интернет
+   │
+Nginx (порт 80/443) — единственный публичный процесс
+   ├── /gardenhouse/*          → Next.js  (127.0.0.1:3000)
+   ├── /gardenhouse/api/       → Django   (127.0.0.1:8000)
+   ├── /gardenhouse/admin/     → Django   (127.0.0.1:8000)
+   └── /gardenhouse/media/     → файлы из backend/media (отдаёт сам nginx)
+```
+
+Оба сервиса слушают только `127.0.0.1` и запускаются от пользователя `maintest`, не от root. Принцип наименьших привилегий: наружу открыт только nginx, БД доступна только роли `garden_user` с паролем из `.env`.
+
+## Эксплуатация
+
+```bash
+# Логи
+journalctl -u gardenhouse-backend  -f --no-pager
+journalctl -u gardenhouse-frontend -f --no-pager
+
+# Перезапуск сервисов
+sudo systemctl restart gardenhouse-backend gardenhouse-frontend
+
+# Обновление кода (деплой)
+./deploy/deploy.sh
+
+# Продление сертификатов (обычно автоматическое)
+sudo certbot renew
+
+# Проверка портов (должны слушаться только 8000 и 3000 на localhost)
+sudo ss -tlnp | grep -E ':(8000|3000)'
+```
+
+Проверка после деплоя:
+
+```bash
+curl http://127.0.0.1:8000/api/products/        # Django отвечает JSON
+curl -I http://127.0.0.1:3000/gardenhouse/ru    # Next.js отвечает 200
+curl -I https://maintest.site/gardenhouse/ru    # HTTPS извне работает
+```
+
+---
+
+## Локальная разработка
+
+### Backend (Django)
+
+Все команды выполняются из `backend/`:
+
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # заполнить DB_* переменные
+python manage.py migrate --noinput
+python manage.py runserver
+```
+
+### Frontend (Next.js)
+
+Все команды выполняются из `frontend/`:
+
+```bash
+cd frontend
+npm install
+cp .env.example .env.local  # NEXT_PUBLIC_API_URL=http://localhost:8000/api
+npm run dev
+```
+
+---
+
+## Устаревшее: Docker-вариант деплоя
+
+> **Внимание:** ниже описан **предыдущий** способ развёртывания через Docker. Актуальный деплой — без Docker, через systemd-сервисы (см. [`deploy/DEPLOY.md`](deploy/DEPLOY.md)). Docker-файлы и `Makefile` сохранены в репозитории для истории.
 
 ### Проблема, которую решает Docker
 
-Представьте: вы написали приложение на своём ноутбуке. Там установлены Python 3.12, Node.js 22, PostgreSQL 16 — и всё работает. Вы переносите приложение на сервер, а там Python 3.10, Node.js 18, PostgreSQL 14. Приложение падает с ошибками. Знакомо?
+Представьте: вы написали приложение на своём ноутбуке. Там установлены Python 3.12, Node.js 22, PostgreSQL 16 — и всё работает. Вы переносите приложение на сервер, а там Python 3.10, Node.js 18, PostgreSQL 14. Приложение падает с ошибками.
 
 Это называется «проблема окружения»: код зависит не только от самого кода, но и от версий языка, системных библиотек, базы данных, прав доступа, переменных окружения.
 
 **Docker решает эту проблему радикально**: он упаковывает приложение ВМЕСТЕ со всем его окружением в изолированный контейнер. Этот контейнер работает одинаково на вашем ноутбуке, на сервере и на компьютере коллеги.
 
-### Три ключевых понятия
-
 | Термин | Что это | Аналогия |
 |--------|---------|----------|
-| **Образ (Image)** | «Чертеж» приложения: ОС, библиотеки, ваш код — упаковано в неизменяемый слой | Класс в программировании |
-| **Контейнер (Container)** | Запущенный экземпляр образа — изолированный процесс со своей файловой системой, сетью, env | Объект класса |
-| **Docker Compose** | Инструмент для запуска нескольких контейнеров, которые работают вместе | Дирижёр оркестра |
+| **Образ (Image)** | «Чертеж» приложения | Класс в программировании |
+| **Контейнер (Container)** | Запущенный экземпляр образа | Объект класса |
+| **Docker Compose** | Оркестрация нескольких контейнеров | Дирижёр оркестра |
 
----
-
-## Архитектура на сервере (Ubuntu 24.04, 2GB RAM)
-
-```
-                    ┌─────────────────────────────┐
-                    │   Пользователь (браузер)    │
-                    └─────────────┬───────────────┘
-                                  │ 443 (HTTPS)
-                    ┌─────────────▼───────────────┐
-                    │  Хостовой nginx (systemd)  │
-                    │  - SSL (certbot)            │
-                    │  - маршрутизация проектов   │
-                    │  /gardenhouse → Docker      │
-                    │  /project2 → (будущее)      │
-                    └─────────────┬───────────────┘
-                                  │ 127.0.0.1:8080
-                    ┌─────────────▼───────────────┐
-                    │  Docker nginx (контейнер)   │
-                    │  - статика/медиа            │
-                    │  - прокси frontend/backend  │
-                    └──────┬──────────────┬───────┘
-                           │              │
-              ┌────────────▼────┐  ┌──────▼────────────┐
-              │ frontend:3000   │  │ backend:8000      │
-              │ (Next.js SSR)   │──│ (Django/Gunicorn) │
-              └─────────────────┘  └──────┬────────────┘
-                                          │ host.docker.internal
-                              ┌───────────▼────────────┐
-                              │  Хостовой PostgreSQL   │
-                              │  (systemd, :5432)      │
-                              └────────────────────────┘
-```
-
-**В чем смысл двух nginx?**
-
-Хостовой nginx — «диспетчер» всего сервера. Он принимает запросы снаружи (порты 80/443), терминирует SSL и решает, какому проекту адресовать запрос (`/gardenhouse`, позже `/project2`). Чтобы на одном сервере жило несколько проектов.
-
-Docker nginx — «внутренний» nginx проекта. Он слушает только `127.0.0.1:8080` (не доступен извне), проксирует на frontend/backend и раздаёт статику напрямую из вольюмов. Такой подход позволяет не конфликтовать за порты 80/443.
-
-**Почему PostgreSQL не в Docker?**
-
-На сервере **уже установлен** хостовой PostgreSQL (через systemd) с данными проекта. Поднимать второй PostgreSQL в контейнере — значит тратить ~150 MB оперативки из 2 GB и рисковать расхождением данных. Поэтому бэкенд подключается к хостовому PostgreSQL через `host.docker.internal`.
-
-**Бюджет памяти (итого ~620 MB из 2 GB):**
-
-| Сервис | Память | Способ |
-|--------|--------|--------|
-| backend (Gunicorn) | ~350 MB | 2 воркера + `--preload` |
-| frontend (Next.js) | ~250 MB | standalone-вывод |
-| Docker nginx | ~20 MB | Alpine, 1 воркер |
-
-Остаётся **1.4 GB** для системы и будущего второго проекта.
-
----
-
-## Команды управления
-
-Все команды выполняются из корня проекта (`/var/www/gardenhouse`).
-
-### Жизненный цикл
-
-| Команда | Что делает |
-|---------|-----------|
-| `make build` | Собрать Docker-образы заново |
-| `make up` | Запустить все контейнеры в фоне |
-| `make down` | Остановить все контейнеры |
-| `make restart` | Перезапустить все контейнеры |
-| `make clean` | Полная остановка + удаление образов и томов |
-
-### Мониторинг
-
-| Команда | Что делает |
-|---------|-----------|
-| `make ps` | Список запущенных контейнеров |
-| `make health` | Статус контейнеров |
-| `make stats` | Потребление CPU/RAM в реальном времени |
-| `make logs` | Логи всех сервисов (Ctrl+C — выход) |
-| `make logs-backend` | Логи только бэкенда |
-| `make logs-frontend` | Логи только фронтенда |
-| `make logs-nginx` | Логи только Docker-nginx |
-
-### Django
-
-| Команда | Что делает |
-|---------|-----------|
-| `make migrate` | Применить миграции |
-| `make seed` | Наполнить базу данными |
-| `make superuser` | Создать суперпользователя |
-| `make collectstatic` | Пересобрать статику |
-
-### Доступ внутрь контейнеров
-
-| Команда | Что делает |
-|---------|-----------|
-| `make shell-backend` | bash в контейнере backend |
-| `make shell-frontend` | shell в контейнере frontend |
-| `make shell-nginx` | shell в контейнере nginx |
-| `make shell-db` | psql в **хостовой** PostgreSQL |
-| `make check-db` | Проверить доступность PostgreSQL |
-
-### Очистка (важно для 15 GB диска!)
-
-| Команда | Что делает |
-|---------|-----------|
-| `make prune` | Удалить все неиспользуемые образы, контейнеры, тома, кэш сборки |
-
-После каждой пересборки остаются «dangling» образы `<none>:<none>` и кэш сборки. Они съедают гигабайты диска. Автоматическая очистка настроена через cron (каждое воскресенье в 3:00), но можно запустить и вручную.
-
----
-
-## Шпаргалка Docker
+### Быстрый старт (Docker)
 
 ```bash
-# Контейнеры
-docker ps                # запущенные
-docker ps -a             # все
-docker stop <name>       # остановить
-docker start <name>      # запустить
-docker restart <name>    # перезапустить
-docker rm <name>         # удалить
-docker logs -f <name>    # логи в реальном времени
-docker exec -it <name> bash  # войти внутрь
-
-# Образы
-docker images            # список
-docker pull alpine       # скачать
-docker rmi <image>       # удалить
-docker system df         # сколько места занимает Docker
-
-# Очистка
-docker container prune        # остановленные контейнеры
-docker image prune -a         # неиспользуемые образы
-docker volume prune           # неиспользуемые тома
-docker system prune -a --volumes --force   # всё сразу (агрессивно)
+make build        # собрать образы
+make up           # запустить контейнеры
+make migrate      # миграции
+make seed         # наполнить базу
+make superuser    # создать суперпользователя
+make logs         # логи
+make down         # остановить
 ```
 
----
-
-## Деплой на сервер (полная инструкция)
-
-### Шаг 0. Подготовка (один раз)
-
-На сервере Ubuntu 24.04:
-
-```bash
-# 1. Установить Docker
-sudo apt update
-sudo apt install -y docker.io docker-compose-v2
-sudo systemctl enable --now docker
-sudo usermod -aG docker $USER   # права без sudo (перелогиниться после)
-
-# 2. Проверить PostgreSQL и nginx
-sudo systemctl status postgresql
-sudo systemctl status nginx
-
-# 3. Проверить, что старые systemd-сервисы остановлены (deploy.sh сделает это автоматически)
-# Но если хотите вручную:
-sudo systemctl stop gardenhouse-backend gardenhouse-frontend
-sudo systemctl disable gardenhouse-backend gardenhouse-frontend
-```
-
-### Шаг 1. Разместить код на сервере
-
-```bash
-sudo mkdir -p /var/www/gardenhouse
-sudo chown $USER:$USER /var/www/gardenhouse
-cd /var/www/gardenhouse
-
-# Скопировать файлы проекта (git clone или rsync с локальной машины)
-git clone https://github.com/rodionvitenberg-ui/gardenhouse.git .
-```
-
-Если локальная разработка — проще заливать через rsync/SFTP:
-
-```bash
-# С локальной машины
-rsync -avz --exclude node_modules --exclude .next --exclude venv \
-  ./ user@maintest.site:/var/www/gardenhouse/
-```
-
-### Шаг 2. Настроить переменные окружения
-
-```bash
-cd /var/www/gardenhouse
-cp deploy/.env.production .env.production
-nano .env.production
-```
-
-Обязательно замените:
-- `DJANGO_SECRET_KEY` — случайная строка (команда: `python3 -c "import secrets; print(secrets.token_hex(32))"`)
-- `DB_PASSWORD` — пароль для PostgreSQL
-
-### Шаг 3. Запустить деплой
-
-```bash
-sudo bash deploy/deploy.sh
-```
-
-Скрипт автоматически:
-- проверяет Docker, Compose, PostgreSQL, nginx
-- **останавливает старые systemd-сервисы** (освобождает ~600 MB RAM)
-- создаёт роль `garden_user` и базу `garden_db` в PostgreSQL (если нет)
-- собирает Docker-образы (`docker compose build`)
-- запускает контейнеры (`docker compose up -d`)
-- ждёт готовности backend
-- обновляет хостовой nginx конфиг (`deploy/nginx/maintest.site.conf`)
-- применяет миграции + seed
-- настраивает еженедельную очистку Docker через cron
-
-### Шаг 4. Проверить
-
-```bash
-make ps          # контейнеры работают
-make health      # все healthy
-curl http://127.0.0.1:8080/gardenhouse/en   # внутренняя проверка (должен вернуть HTML)
-```
-
-Откройте в браузере: **https://maintest.site/gardenhouse**  
-(если SSL ещё не настроен — http://maintest.site/gardenhouse)
-
-Локализация:
-- `/gardenhouse` → редирект на язык браузера (ru/en)
-- `/gardenhouse/ru` — русская
-- `/gardenhouse/en` — английская
-
-Админка: `/gardenhouse/admin/`
-
-### Обновление кода после изменений
-
-```bash
-cd /var/www/gardenhouse
-git pull                    # забрать новые коммиты
-make build                  # пересобрать образы
-make up                     # перезапустить контейнеры
-make migrate                # миграции, если были изменения моделей
-```
-
-Или просто повторно: `sudo bash deploy/deploy.sh`
-
----
-
-## Добавление второго проекта на этот же сервер
-
-1. Создайте `/var/www/project2` со своим `docker-compose.yml`.
-2. Убедитесь, что его внутренний nginx слушает **другой порт** (например, `127.0.0.1:8081`).
-3. В хостовом nginx добавьте location для второго проекта:
-
-```nginx
-location ^~ /project2 {
-    proxy_pass http://127.0.0.1:8081;
-    # ... те же proxy_set_header ...
-}
-```
-
-4. `sudo nginx -t && sudo systemctl reload nginx`
-
-Порты 80/443 разделяет хостовой nginx, поэтому проекты не конфликтуют.
-
----
-
-## Структура файлов деплоя
-
-```
-deploy/
-├── docker/
-│   ├── Dockerfile.backend     # Django + Gunicorn (multi-stage)
-│   ├── Dockerfile.frontend    # Next.js standalone (multi-stage)
-│   ├── entrypoint.sh          # wait-db → migrate → collectstatic → gunicorn
-│   ├── nginx.conf             # Внутренний nginx (1 воркер, gzip, лимиты)
-│   └── nginx-site.conf        # Роутинг /gardenhouse внутри Docker
-├── nginx/
-│   └── maintest.site.conf     # Хостовой nginx: SSL + роутинг на :8080
-├── deploy.sh                  # Скрипт установки на сервер
-├── .env.production            # Шаблон переменных окружения
-├── systemd/                   # [Устаревшее] старый bare-metal деплой
-└── pm2/                       # [Устаревшее] старый PM2 конфиг
-docker-compose.yml             # Оркестрация контейнеров
-Makefile                       # Команды управления
-.dockerignore                  # Что не попадает в сборку
-README.md                      # Этот файл
-```
-
----
-
-## Устранение неполадок
-
-### Backend не поднимается
-
-```bash
-make logs-backend
-```
-
-Типичные причины:
-- PostgreSQL не доступен → проверьте: `make check-db`
-- Пароль не совпадает → проверьте `DB_PASSWORD` в `.env.production`
-- База не создана → `sudo bash deploy/deploy.sh` ещё раз (создаст)
-
-### Frontend отдаёт 502
-
-```bash
-make logs-frontend
-# Или проверьте изнутри:
-curl http://127.0.0.1:8080/gardenhouse/en
-```
-
-### Сайт открывается, но нет картинок
-
-Проверьте media-директорию на хосте:
-
-```bash
-ls -la /var/www/gardenhouse/backend/media/
-```
-
-Если в контейнере поменялись права — восстановите: `sudo chown -R www-data:www-data /var/www/gardenhouse/backend/media`
-
-### Закончилось место
-
-```bash
-docker system df           # сколько занимает Docker
-make prune                 # агрессивная очистка
-sudo journalctl --vacuum-size=100M   # очистить systemd-логи
-```
-
----
-
-## Часто задаваемые вопросы
-
-### Чем Docker отличается от виртуальной машины?
-
-ВМ эмулирует железо и запускает целую ОС с ядром (гигабайты). Docker-контейнер разделяет ядро хоста и изолирует только процессы/файловую систему. Контейнер стартует за секунды и ест мегабайты.
-
-### Нужно ли знать Docker для управления?
-
-Обычно достаточно команд `make ...`. Но понимание (образ, контейнер, том, compose) поможет при отладке.
-
-### Можно ли запустить без Docker?
-
-Да — на сервере это уже было сделано раньше через systemd (файлы в `deploy/systemd/`). Но Docker надёжнее: изолированная среда, лимиты памяти, авто-рестарт, лёгкий откат версий.
-
-### Как обновить только backend?
-
-```bash
-docker compose up -d --build backend
-```
-
-### Почему entrypoint применяет миграции как root?
-
-Контейнер запускается от root, потом entrypoint делает миграции и запускает Gunicorn. Отдельный непривилегированный пользователь в контейнере возможен, но для продакшн-простоты и прав на медиа-вольюм оставлен root. Docker-изоляция достаточна.
+Все команды — из корня проекта.
 
 ---
 
@@ -379,5 +172,6 @@ docker compose up -d --build backend
 
 - [Docker Docs](https://docs.docker.com/)
 - [Docker Compose](https://docs.docker.com/compose/)
-- [Dockerfile Reference](https://docs.docker.com/reference/dockerfile/)
+- [Next.js](https://nextjs.org/docs)
+- [Django](https://docs.djangoproject.com/)
 - [Play with Docker](https://labs.play-with-docker.com/) — песочница в браузере

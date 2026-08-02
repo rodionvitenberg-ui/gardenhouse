@@ -1,0 +1,30 @@
+# /etc/systemd/system/gardenhouse-backend.service
+# Django (Gunicorn) — сервер приложения, слушает 127.0.0.1:8000
+# Только localhost: наружу смотрит nginx.
+
+[Unit]
+Description=Gardenhouse Django (Gunicorn)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=maintest
+Group=maintest
+WorkingDirectory=/home/maintest/gardenhouse/backend
+EnvironmentFile=/home/maintest/gardenhouse/backend/.env
+# Gunicorn: 3 воркера, каждый — отдельный процесс Python.
+# --timeout 120: у DRF нет тяжёлых запросов, но запас на случай долгих вызовов.
+ExecStart=/home/maintest/gardenhouse/backend/venv/bin/gunicorn core.wsgi:application --bind 127.0.0.1:8000 --workers 3 --name gardenhouse-backend
+Restart=always
+RestartSec=5
+# Ограничения безопасности: процесс запускается только от пользователя maintest,
+# без привилегий, с чистыми путями.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/home/maintest/gardenhouse
+
+[Install]
+WantedBy=multi-user.target
