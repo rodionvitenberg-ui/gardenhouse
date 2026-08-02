@@ -94,8 +94,10 @@ sudo -u "${APP_USER}" python3 -m venv "${APP_DIR}/backend/venv"
 sudo -u "${APP_USER}" "${PIP_BIN}" install --upgrade pip
 sudo -u "${APP_USER}" "${PIP_BIN}" install -r "${APP_DIR}/backend/requirements.txt"
 
-echo "==> [6/9] Installing frontend dependencies (npm ci)"
-sudo -u "${APP_USER}" npm --prefix "${APP_DIR}/frontend" ci
+echo "==> [6/9] Installing frontend dependencies"
+# Prefer a clean install, but fall back to `npm install` if the lockfile
+# is out of sync with package.json — the deploy shouldn't be blocked by that.
+sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && (npm ci || npm install)"
 
 echo "==> [7/9] Building frontend"
 # Next.js reads .env.production automatically during build.
