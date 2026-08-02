@@ -9,7 +9,7 @@ User=maintest
 Group=maintest
 WorkingDirectory=/var/www/gardenhouse/backend
 EnvironmentFile=/var/www/gardenhouse/backend/.env
-ExecStart=/var/www/gardenhouse/backend/venv/bin/gunicorn core.wsgi:application --bind 127.0.0.1:8001 --workers 3 --timeout 120
+ExecStart=/var/www/gardenhouse/backend/venv/bin/gunicorn core.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 120
 Restart=always
 RestartSec=5
 
