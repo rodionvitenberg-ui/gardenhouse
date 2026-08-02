@@ -56,27 +56,59 @@ else
     sudo -u "${APP_USER}" git -C "${APP_DIR}" pull --ff-only origin "${REPO_BRANCH}"
 fi
 
-echo "==> [3/9] Creating/updating backend/.env"
+echo "==> [3/9] Ensuring backend/.env is the production config"
 BACKEND_ENV="${APP_DIR}/backend/.env"
+DB_USER_EXPECTED="gardenhouse_user"
+DB_NAME_EXPECTED="gardenhouse_db"
+
+# Recreate .env from the template when it is missing or still holds dev
+# credentials (e.g. a local .env copied to the server with garden_user).
+NEED_RECREATE=0
 if [ ! -f "${BACKEND_ENV}" ]; then
+    NEED_RECREATE=1
+elif ! grep -q "^DB_USER=${DB_USER_EXPECTED}$" "${BACKEND_ENV}" \
+     || ! grep -q "^DB_NAME=${DB_NAME_EXPECTED}$" "${BACKEND_ENV}"; then
+    NEED_RECREATE=1
+fi
+
+if [ "${NEED_RECREATE}" = "1" ]; then
     cp "${APP_DIR}/backend/.env.production.example" "${BACKEND_ENV}"
     SECRET_KEY="$(openssl rand -hex 48)"
     # Replace the placeholder secret with a real generated one
     sed -i "s|^DJANGO_SECRET_KEY=.*|DJANGO_SECRET_KEY=${SECRET_KEY}|" "${BACKEND_ENV}"
-    # Remove the DB password placeholder — create_db.sh fills it in
-    sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=change-me-generated-by-deploy-script|" "${BACKEND_ENV}"
-    echo "  Created ${BACKEND_ENV} with a freshly generated SECRET_KEY"
+    echo "  Recreated ${BACKEND_ENV} from the production template with a fresh SECRET_KEY"
 else
-    echo "  ${BACKEND_ENV} already exists — leaving it untouched"
+    echo "  ${BACKEND_ENV} already has the production DB credentials — left untouched"
 fi
 chmod 600 "${BACKEND_ENV}"
 chown "${APP_USER}":"${APP_USER}" "${BACKEND_ENV}"
 
-# If create_db.sh hasn't run yet, fill the DB password placeholder now.
-if grep -q "^DB_PASSWORD=change-me-generated-by-deploy-script" "${BACKEND_ENV}"; then
-    echo "  WARNING: DB_PASSWORD is still a placeholder in ${BACKEND_ENV}."
-    echo "  Run create_db.sh first (it generates the password and writes it here)."
+# Ensure the PostgreSQL role exists and the password stored in .env is real
+# (not a placeholder) and in sync with the role.
+ROLE_EXISTS="$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER_EXPECTED}'" 2>/dev/null | tr -d ' ' || echo '')"
+if [ "${ROLE_EXISTS}" != "1" ]; then
+    echo "  ERROR: PostgreSQL role '${DB_USER_EXPECTED}' does not exist."
+    echo "  Run create_db.sh first (it creates the role and the database)."
     exit 1
+fi
+
+DB_PASSWORD="$(grep "^DB_PASSWORD=" "${BACKEND_ENV}" | head -n1 | cut -d'=' -f2- || true)"
+if [ -z "${DB_PASSWORD}" ] || [ "${DB_PASSWORD}" = "change-me-generated-by-deploy-script" ]; then
+    DB_PASSWORD="$(openssl rand -hex 24)"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 \
+        -c "ALTER ROLE ${DB_USER_EXPECTED} WITH LOGIN PASSWORD '${DB_PASSWORD}';" >/dev/null
+    if grep -q "^DB_PASSWORD=" "${BACKEND_ENV}"; then
+        sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|" "${BACKEND_ENV}"
+    else
+        printf '\nDB_PASSWORD=%s\n' "${DB_PASSWORD}" >> "${BACKEND_ENV}"
+    fi
+    chown "${APP_USER}":"${APP_USER}" "${BACKEND_ENV}"
+    echo "  Generated a fresh DB password, synced to PostgreSQL and ${BACKEND_ENV}"
+else
+    # Existing password — keep the PostgreSQL role in sync with it.
+    sudo -u postgres psql -v ON_ERROR_STOP=1 \
+        -c "ALTER ROLE ${DB_USER_EXPECTED} WITH LOGIN PASSWORD '${DB_PASSWORD}';" >/dev/null
+    echo "  DB password already set — PostgreSQL role re-synced"
 fi
 
 echo "==> [4/9] Creating frontend/.env.production"
