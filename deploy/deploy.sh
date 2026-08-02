@@ -166,12 +166,17 @@ systemctl restart gardenhouse-backend.service
 systemctl restart gardenhouse-frontend.service
 
 cp "${APP_DIR}/deploy/nginx/maintest.site.conf" /etc/nginx/sites-available/maintest.site.conf
-if [ -f /etc/nginx/sites-enabled/default ]; then
-    rm -f /etc/nginx/sites-enabled/default
-fi
-if [ ! -L /etc/nginx/sites-enabled/maintest.site.conf ]; then
-    ln -s /etc/nginx/sites-available/maintest.site.conf /etc/nginx/sites-enabled/maintest.site.conf
-fi
+# Remove ANY conflicting site config (the Ubuntu default site, or any config
+# that already claims our domain). Otherwise nginx may route requests to an
+# older server block and serve 404s from the wrong root.
+for f in /etc/nginx/sites-enabled/*; do
+    [ -e "$f" ] || continue
+    if [ "$(basename "$f")" = "default" ] || grep -q "maintest.site" "$f" 2>/dev/null; then
+        rm -f "$f"
+        echo "  Removed conflicting nginx site: $f"
+    fi
+done
+ln -sf /etc/nginx/sites-available/maintest.site.conf /etc/nginx/sites-enabled/maintest.site.conf
 mkdir -p /var/www/certbot
 nginx -t
 systemctl reload nginx
