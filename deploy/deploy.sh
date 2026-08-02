@@ -212,12 +212,15 @@ sudo -u "${APP_USER}" env \
 if [ -f /etc/nginx/sites-available/maintest.site.conf ] \
    && grep -q "managed by Certbot" /etc/nginx/sites-available/maintest.site.conf; then
     echo "  /etc/nginx/sites-available/maintest.site.conf already managed by Certbot — leaving HTTPS block intact"
-    # Still ensure the root redirect exists in the live config (idempotent).
-    # Insert it BEFORE `listen 443 ssl;` so it lands inside the HTTPS server
-    # block — appending to the end of the file would place it outside any
-    # server block and break `nginx -t`.
+    # Ensure the root redirect AND the raw-static-assets redirect exist in the
+    # live config (idempotent). Insert them BEFORE `listen 443 ssl;` so they
+    # land inside the HTTPS server block — appending to the end of the file
+    # would place them outside any server block and break `nginx -t`.
     if ! grep -q "location = /" /etc/nginx/sites-available/maintest.site.conf; then
         sed -i '/listen 443 ssl;/i \    # Domain root -> the app\n    location = / {\n        return 301 /gardenhouse;\n    }' /etc/nginx/sites-available/maintest.site.conf
+    fi
+    if ! grep -q "location ~\* \^/\(?!gardenhouse" /etc/nginx/sites-available/maintest.site.conf; then
+        sed -i '/listen 443 ssl;/i \    # Raw static assets requested WITHOUT the /gardenhouse prefix (see template for details)\n    location ~* ^/(?!gardenhouse|api|admin|static|media|_next|\.well-known)([^/]+\\.(?:jpg|jpeg|png|gif|webp|svg|mp4|webm|mov|woff2?|ttf|otf|ico|avif|pdf))$ {\n        return 301 /gardenhouse/$1;\n    }' /etc/nginx/sites-available/maintest.site.conf
     fi
 else
     cp "${APP_DIR}/deploy/nginx/maintest.site.conf" /etc/nginx/sites-available/maintest.site.conf

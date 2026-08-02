@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, forwardRef, useImperativeHandle } from 'react';
+import { assetUrl } from '@/lib/asset';
 
 export interface AmbientVideoHandle {
   play: () => void;
@@ -84,7 +85,7 @@ const AmbientVideo = forwardRef<AmbientVideoHandle, AmbientVideoProps>(function 
       {!playing && (
         <>
           <img
-            src={poster}
+            src={assetUrl(poster)}
             alt=""
             className="absolute inset-0 w-full h-full object-cover"
             loading="lazy"
@@ -113,13 +114,13 @@ const AmbientVideo = forwardRef<AmbientVideoHandle, AmbientVideoProps>(function 
         <video
           ref={videoRef}
           className={`absolute inset-0 w-full h-full object-cover ${overlayClassName ? '' : ''}`}
-          src={src}
-          muted
-          autoPlay
-          loop
-          playsInline
-          preload="auto"
-        />
+            src={assetUrl(src)}
+            muted
+            autoPlay
+            loop
+            playsInline
+            preload="auto"
+          />
       )}
 
       {/* Оверлей поверх видео после старта */}
