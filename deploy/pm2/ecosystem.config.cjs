@@ -22,6 +22,14 @@ module.exports = {
       watch: false,
       max_memory_restart: "500M",
       time: true, // timestamped logs
+      // Give `next start` time to release port 3000 on restart, and wait for
+      // the server to actually boot before marking the app as online. This
+      // avoids EADDRINUSE loops when the previous process is still shutting
+      // down (e.g. after `pkill -f "next start"` on redeploy).
+      kill_timeout: 10000,
+      listen_timeout: 15000,
+      wait_ready: true,
+      shutdown_with_message: false,
     },
   ],
 };

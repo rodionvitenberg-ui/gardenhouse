@@ -1,4 +1,6 @@
 # backend/shop/models.py
+from decimal import Decimal
+
 from django.db import models
 from django.core.validators import MinValueValidator
 
@@ -35,7 +37,7 @@ class Product(models.Model):
     price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(0.0)],
+        validators=[MinValueValidator(Decimal("0.00"))],
         verbose_name="Цена",
     )
     stock = models.PositiveIntegerField(default=0, verbose_name="Остаток на складе")
@@ -53,6 +55,9 @@ class Product(models.Model):
     class Meta:
         verbose_name = "Товар"
         verbose_name_plural = "Товары"
+        # Ordering is required by DRF pagination: without it, page counts can
+        # shift between requests (UnorderedObjectListWarning in Gunicorn logs).
+        ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["status", "is_active"]),
         ]

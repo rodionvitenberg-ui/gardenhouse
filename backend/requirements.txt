@@ -21,8 +21,10 @@ psycopg2-binary==2.9.12
 pillow==12.3.0
 
 # Environment variables
+# NOTE: only python-dotenv. The `dotenv` package (0.9.9) ships the same
+# `dotenv` Python module and can shadow python-dotenv's `load_dotenv`,
+# breaking `core/settings.py` with an ImportError at Gunicorn startup.
 python-dotenv==1.2.2
-dotenv==0.9.9
 
 # SQL parsing / misc
 sqlparse==0.5.5

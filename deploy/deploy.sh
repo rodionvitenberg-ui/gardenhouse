@@ -182,8 +182,18 @@ systemctl enable gardenhouse-backend.service
 systemctl restart gardenhouse-backend.service
 
 # Frontend runs under PM2.
-rm -f /etc/systemd/system/gardenhouse-frontend.service   # remove the old systemd unit if present
+# 1) Fully stop and disable the old systemd unit (if any). Merely removing
+#    the unit file leaves a running `next start` process holding port 3000.
+if systemctl list-unit-files | grep -q '^gardenhouse-frontend.service'; then
+    systemctl disable --now gardenhouse-frontend.service >/dev/null 2>&1 || true
+fi
+rm -f /etc/systemd/system/gardenhouse-frontend.service
 systemctl daemon-reload
+# 2) Kill ANY orphaned `next start` process (e.g. started manually or by the
+#    old systemd unit before it was disabled). Without this, PM2 fails with
+#    EADDRINUSE and crash-loops forever.
+pkill -f "next start" >/dev/null 2>&1 || true
+sleep 1
 sudo -u "${APP_USER}" env \
     PM2_HOME="/home/${APP_USER}/.pm2" \
     pm2 startOrReload "${APP_DIR}/deploy/pm2/ecosystem.config.cjs" --update-env
@@ -196,7 +206,22 @@ sudo -u "${APP_USER}" env \
     PM2_HOME="/home/${APP_USER}/.pm2" \
     pm2 startup systemd -u "${APP_USER}" --hp "/home/${APP_USER}" >/dev/null 2>&1 || true
 
-cp "${APP_DIR}/deploy/nginx/maintest.site.conf" /etc/nginx/sites-available/maintest.site.conf
+# Copy the nginx config from the repo — UNLESS the live one was already
+# modified by Certbot. Overwriting it would strip the `listen 443 ssl` block
+# and certificate paths that `certbot --nginx` injected, breaking HTTPS.
+if [ -f /etc/nginx/sites-available/maintest.site.conf ] \
+   && grep -q "managed by Certbot" /etc/nginx/sites-available/maintest.site.conf; then
+    echo "  /etc/nginx/sites-available/maintest.site.conf already managed by Certbot — leaving HTTPS block intact"
+    # Still ensure the root redirect exists in the live config (idempotent).
+    # Insert it BEFORE `listen 443 ssl;` so it lands inside the HTTPS server
+    # block — appending to the end of the file would place it outside any
+    # server block and break `nginx -t`.
+    if ! grep -q "location = /" /etc/nginx/sites-available/maintest.site.conf; then
+        sed -i '/listen 443 ssl;/i \    # Domain root -> the app\n    location = / {\n        return 301 /gardenhouse;\n    }' /etc/nginx/sites-available/maintest.site.conf
+    fi
+else
+    cp "${APP_DIR}/deploy/nginx/maintest.site.conf" /etc/nginx/sites-available/maintest.site.conf
+fi
 # Remove ANY conflicting site config (the Ubuntu default site, or any config
 # that already claims our domain). Otherwise nginx may route requests to an
 # older server block and serve 404s from the wrong root.
