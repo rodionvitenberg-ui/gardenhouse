@@ -51,11 +51,19 @@ echo "Node: $(node --version), npm: $(npm --version)"
 
 echo "==> [4/6] Creating application user and directory"
 if ! id "${APP_USER}" >/dev/null 2>&1; then
-    useradd --system --create-home --shell /bin/bash --comment "GardenHouse app" "${APP_USER}"
+    useradd --system --create-home --user-group --shell /bin/bash --comment "GardenHouse app" "${APP_USER}"
     echo "Created system user '${APP_USER}'"
 else
     echo "User '${APP_USER}' already exists"
 fi
+# Ensure the matching group exists and is the user's primary group.
+# Some pre-existing system users have "nogroup" as their primary group,
+# which makes `chown user:user` fail with "invalid group".
+if ! getent group "${APP_USER}" >/dev/null 2>&1; then
+    groupadd --system "${APP_USER}"
+    echo "Created system group '${APP_USER}'"
+fi
+usermod -g "${APP_USER}" "${APP_USER}" >/dev/null 2>&1 || true
 mkdir -p "${APP_DIR}"
 chown -R "${APP_USER}":"${APP_USER}" "${APP_DIR}"
 

@@ -57,6 +57,14 @@ echo "==> Granting privileges"
 sudo -u postgres psql -v ON_ERROR_STOP=1 \
     -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
 
+echo "==> Ensuring app user group exists"
+APP_USER="maintest"
+if ! getent group "${APP_USER}" >/dev/null 2>&1; then
+    groupadd --system "${APP_USER}"
+    echo "  Created system group '${APP_USER}'"
+fi
+usermod -g "${APP_USER}" "${APP_USER}" >/dev/null 2>&1 || true
+
 echo "==> Writing DB_PASSWORD into ${ENV_FILE}"
 touch "${ENV_FILE}"
 chmod 600 "${ENV_FILE}"
