@@ -79,11 +79,20 @@ echo "==> Backend: инициализация базы данных..."
 # Скрипт сам читает пароль из .env и создаёт роль/БД.
 # На сервере потребуются права администратора PostgreSQL.
 if command -v sudo >/dev/null 2>&1 && sudo -n -u postgres true 2>/dev/null; then
-    sudo -n -u postgres bash "${APP_DIR}/backend/scripts/setup_db.sh"
+    # Домашний каталог maintest закрыт правами 700 — пользователь postgres не сможет
+    # прочитать скрипт и .env по исходному пути (Permission denied). Копируем их во
+    # временную директорию в /tmp с открытыми правами и запускаем скрипт оттуда.
+    TMP_DB_DIR="$(mktemp -d /tmp/gardenhouse-db.XXXXXX)"
+    trap 'rm -rf "${TMP_DB_DIR}"' EXIT
+    chmod 755 "${TMP_DB_DIR}"
+    cp "${APP_DIR}/backend/scripts/setup_db.sh" "${TMP_DB_DIR}/setup_db.sh"
+    cp "${APP_DIR}/backend/.env" "${TMP_DB_DIR}/.env"
+    chmod 644 "${TMP_DB_DIR}/setup_db.sh" "${TMP_DB_DIR}/.env"
+    sudo -n -u postgres env ENV_FILE="${TMP_DB_DIR}/.env" bash "${TMP_DB_DIR}/setup_db.sh"
 else
-    echo "    !!! Не удалось запустить setup_db.sh с правами postgres."
-    echo "    Выполните вручную от имени postgres:"
-    echo "        sudo -i -u postgres bash ${APP_DIR}/backend/scripts/setup_db.sh"
+    echo "    !!! Не удалось запустить setup_db.sh с правами postgres (нет passwordless sudo)."
+    echo "    Выполните вручную от имени maintest:"
+    echo "        sudo bash -c 'tmp=\$(mktemp -d); chmod 755 \$tmp; cp ${APP_DIR}/backend/scripts/setup_db.sh ${APP_DIR}/backend/.env \$tmp/; chmod 644 \$tmp/setup_db.sh \$tmp/.env; sudo -u postgres env ENV_FILE=\$tmp/.env bash \$tmp/setup_db.sh; rm -rf \$tmp'"
 fi
 
 echo "==> Backend: миграции..."

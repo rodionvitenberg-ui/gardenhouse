@@ -126,7 +126,33 @@ sudo -i -u postgres bash /home/maintest/gardenhouse/backend/scripts/setup_db.sh
 3. **`GRANT ALL PRIVILEGES ON DATABASE garden_db TO garden_user`** — грант на уровне базы (подключение + create schema и т.п.).
 4. **`GRANT ALL ON SCHEMA public TO garden_user`** + **`ALTER SCHEMA public OWNER TO garden_user`** — критично для **PostgreSQL 15+**: начиная с этой версии, публичная схема по умолчанию не принадлежит обычной роли. Без этого шага Django не сможет создавать таблицы при `migrate`.
 
-**Почему пароль не внутри скрипта, а в `.env`?** Скрипт читает его из `.env`, значит пароль живёт в одном месте — конфиг, который вы контролируете, и не зашит в код/коммит.
+**Типичная ошибка `Permission denied` при запуске из `deploy.sh`:**
+
+```
+bash: /home/maintest/gardenhouse/backend/scripts/setup_db.sh: Permission denied
+```
+
+Причина — **права доступа к домашнему каталогу**: `/home/maintest` создаётся с правами `700` (только владелец `maintest` может входить). Когда `deploy.sh` пытается запустить скрипт от имени пользователя `postgres`:
+
+```bash
+sudo -u postgres bash /home/maintest/gardenhouse/backend/scripts/setup_db.sh
+```
+
+пользователь `postgres` не может даже **пройти по пути** `/home/maintest` — у него нет права `x` на эту директорию, хотя сам скрипт и `.env` лежат с нормальными правами. Отсюда и `Permission denied` — и это **правильное поведение системы**, а не баг: закрытый домашний каталог защищает твои файлы от чтения другими пользователями.
+
+**Решение:** копируем нужные файлы во временную директорию с открытыми правами и запускаем оттуда:
+
+```bash
+tmp=$(mktemp -d)
+chmod 755 "$tmp"
+cp /home/maintest/gardenhouse/backend/scripts/setup_db.sh "$tmp/"
+cp /home/maintest/gardenhouse/backend/.env "$tmp/"
+chmod 644 "$tmp/setup_db.sh" "$tmp/.env"
+sudo -u postgres env ENV_FILE="$tmp/.env" bash "$tmp/setup_db.sh"
+rm -rf "$tmp"
+```
+
+Именно это `deploy.sh` делает автоматически: создаёт `/tmp/gardenhouse-db.XXXXXX`, кладёт туда скрипт и `.env`, запускает `setup_db.sh` от имени `postgres`, а по завершении удаляет временную папку. Пароль из `.env` в постоянном виде при этом нигде не остаётся.
 
 ---
 
