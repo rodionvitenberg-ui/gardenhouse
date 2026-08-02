@@ -68,10 +68,13 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 \
 echo "==> Ensuring app user group exists"
 APP_USER="maintest"
 if ! getent group "${APP_USER}" >/dev/null 2>&1; then
-    groupadd --system "${APP_USER}"
-    echo "  Created system group '${APP_USER}'"
+    groupadd "${APP_USER}"
+    echo "  Created group '${APP_USER}'"
 fi
-usermod -g "${APP_USER}" "${APP_USER}" >/dev/null 2>&1 || true
+# Add the app user to the matching group as a SUPPLEMENTARY group, so that
+# `chown user:user` and systemd units (Group=<user>) work. An existing
+# user's primary group (e.g. `sudo`) is intentionally left unchanged.
+usermod -aG "${APP_USER}" "${APP_USER}" >/dev/null 2>&1 || true
 
 echo "==> Writing DB_PASSWORD into ${ENV_FILE}"
 touch "${ENV_FILE}"

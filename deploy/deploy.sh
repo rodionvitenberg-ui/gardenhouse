@@ -51,14 +51,14 @@ if ! id "${APP_USER}" >/dev/null 2>&1; then
     echo "  Run setup_server.sh first."
     exit 1
 fi
-# Ensure the matching group exists and is the user's primary group, so that
-# `chown user:user` doesn't fail with "invalid group" for pre-existing
-# system users whose primary group is nogroup.
+# Ensure the matching group exists. The app user is added to it as a
+# SUPPLEMENTARY group — we intentionally do NOT change an existing user's
+# primary group, which is often `sudo` on provider-configured boxes.
 if ! getent group "${APP_USER}" >/dev/null 2>&1; then
-    groupadd --system "${APP_USER}"
-    echo "  Created system group '${APP_USER}'"
+    groupadd "${APP_USER}"
+    echo "  Created group '${APP_USER}'"
 fi
-usermod -g "${APP_USER}" "${APP_USER}" >/dev/null 2>&1 || true
+usermod -aG "${APP_USER}" "${APP_USER}" >/dev/null 2>&1 || true
 mkdir -p "${APP_DIR}"
 chown -R "${APP_USER}":"${APP_USER}" "${APP_DIR}"
 
