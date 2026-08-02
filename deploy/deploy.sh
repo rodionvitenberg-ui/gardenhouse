@@ -172,14 +172,27 @@ sudo -u "${APP_USER}" env \
     PATH="${APP_DIR}/backend/venv/bin:$PATH" \
     "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" seed_journal --settings=core.settings
 
-echo "==> [9/9] Installing systemd units + nginx config"
+echo "==> [9/9] Installing systemd (backend) + PM2 (frontend) + nginx config"
+# Backend runs under systemd (Gunicorn).
 cp "${APP_DIR}/deploy/systemd/gardenhouse-backend.service" /etc/systemd/system/
-cp "${APP_DIR}/deploy/systemd/gardenhouse-frontend.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable gardenhouse-backend.service
-systemctl enable gardenhouse-frontend.service
 systemctl restart gardenhouse-backend.service
-systemctl restart gardenhouse-frontend.service
+
+# Frontend runs under PM2.
+rm -f /etc/systemd/system/gardenhouse-frontend.service   # remove the old systemd unit if present
+systemctl daemon-reload
+sudo -u "${APP_USER}" env \
+    PM2_HOME="/home/${APP_USER}/.pm2" \
+    pm2 startOrReload "${APP_DIR}/deploy/pm2/ecosystem.config.cjs" --update-env
+sudo -u "${APP_USER}" env \
+    PM2_HOME="/home/${APP_USER}/.pm2" \
+    pm2 save
+# Auto-start PM2 on boot for the app user (idempotent: the `startup` command
+# creates a systemd unit named pm2-<user>.service).
+sudo -u "${APP_USER}" env \
+    PM2_HOME="/home/${APP_USER}/.pm2" \
+    pm2 startup systemd -u "${APP_USER}" --hp "/home/${APP_USER}" >/dev/null 2>&1 || true
 
 cp "${APP_DIR}/deploy/nginx/maintest.site.conf" /etc/nginx/sites-available/maintest.site.conf
 # Remove ANY conflicting site config (the Ubuntu default site, or any config
@@ -200,7 +213,7 @@ systemctl reload nginx
 echo ""
 echo "=== Deploy complete ==="
 echo "  Backend  : http://127.0.0.1:8001  (systemd: gardenhouse-backend)"
-echo "  Frontend : http://127.0.0.1:3000  (systemd: gardenhouse-frontend)"
+echo "  Frontend : http://127.0.0.1:3000  (pm2: gardenhouse-frontend)"
 echo "  Public   : http://${DOMAIN}/gardenhouse"
 echo ""
 echo "Next:"

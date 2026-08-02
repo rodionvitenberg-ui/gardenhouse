@@ -57,6 +57,12 @@ if ! command -v node >/dev/null 2>&1 || ! node --version 2>/dev/null | grep -q "
 fi
 echo "Node: $(node --version), npm: $(npm --version)"
 
+echo "==> [3b/6] Installing PM2 (process manager for the Next.js frontend)"
+if ! command -v pm2 >/dev/null 2>&1; then
+    npm install -g pm2
+fi
+echo "PM2: $(pm2 --version)"
+
 echo "==> [4/6] Creating application user and directory"
 if ! id "${APP_USER}" >/dev/null 2>&1; then
     useradd --system --create-home --user-group --shell /bin/bash --comment "GardenHouse app" "${APP_USER}"
