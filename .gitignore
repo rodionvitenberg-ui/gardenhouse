@@ -14,12 +14,13 @@ Thumbs.db
 
 # ==============================
 # Environment files
-# (commit only .env.example and *.env.production.example)
+# (commit only .env.example, *.env.production.example, and deploy/.env.production template)
 # ==============================
 .env
 .env.*
 !.env.example
 !.env.production.example
+!deploy/.env.production
 
 # ==============================
 # Python / Django
@@ -65,6 +66,11 @@ yarn-error.log*
 # ==============================
 skills/
 .clinerules
+
+# ==============================
+# Docker volumes (local dev)
+# ==============================
+docker-volumes/
 
 # ==============================
 # Misc

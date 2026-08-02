@@ -4,6 +4,9 @@ import createNextIntlPlugin from "next-intl/plugin";
 const withNextIntl = createNextIntlPlugin();
 
 const nextConfig: NextConfig = {
+  // Standalone output for Docker — produces .next/standalone/server.js
+  output: "standalone",
+
   // Sub-path the app is served from (e.g. "/gardenhouse" in production).
   // Empty string when served at the domain root.
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || "",
