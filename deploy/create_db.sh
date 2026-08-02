@@ -14,6 +14,14 @@
 
 set -euo pipefail
 
+# These scripts must run as root: they create PostgreSQL roles/databases
+# (via `sudo -u postgres`) and chown the app directory.
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: run as root (or with full sudo):"
+    echo "  sudo bash $0"
+    exit 1
+fi
+
 APP_DIR="/var/www/gardenhouse"
 DB_NAME="gardenhouse_db"
 DB_USER="gardenhouse_user"

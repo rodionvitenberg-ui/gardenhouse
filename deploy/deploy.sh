@@ -24,6 +24,14 @@
 
 set -euo pipefail
 
+# These scripts must run as root: they configure systemd units and nginx,
+# create the app user, and use `sudo -u` internally.
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: run as root (or with full sudo):"
+    echo "  sudo bash $0"
+    exit 1
+fi
+
 APP_NAME="gardenhouse"
 APP_USER="maintest"
 APP_DIR="/var/www/${APP_NAME}"

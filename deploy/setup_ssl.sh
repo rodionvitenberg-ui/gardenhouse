@@ -12,6 +12,13 @@
 
 set -euo pipefail
 
+# certbot needs root to write to /etc/letsencrypt and reload nginx.
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: run as root (or with full sudo):"
+    echo "  sudo bash $0"
+    exit 1
+fi
+
 DOMAIN="maintest.site"
 
 echo "==> Verifying DNS resolves to this server"
