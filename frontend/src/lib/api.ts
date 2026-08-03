@@ -11,11 +11,24 @@ import type {
   OrderCreatePayload,
 } from '@/types';
 
+// Browser: same-origin /gardenhouse/api (nginx → Django).
+// Server (RSC / SSR): absolute loopback — see getServerApiUrl().
+function resolveApiBase(): string {
+  if (typeof window === "undefined") {
+    const server = process.env.API_URL?.trim();
+    if (server && /^https?:\/\//i.test(server)) return server.replace(/\/$/, "");
+    return "http://127.0.0.1:8000/api";
+  }
+  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+}
+
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api',
+  baseURL: resolveApiBase(),
   headers: {
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   },
+  // Avoid multi-minute hangs if Django is down
+  timeout: 15000,
 });
 
 // Intercept requests to add Accept-Language header from the NEXT_LOCALE cookie

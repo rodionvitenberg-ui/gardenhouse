@@ -237,7 +237,10 @@ ensure_env_key "${BACKEND_ENV}" "DB_PORT" "5432"
 ensure_env_key "${BACKEND_ENV}" "CORS_ALLOWED_ORIGINS" "https://${DOMAIN},http://${DOMAIN}"
 chmod 600 "${BACKEND_ENV}"
 app_chown "${BACKEND_ENV}"
-ok "backend/.env written"
+# Re-sync role password AFTER .env is final (avoids drift if file was recreated)
+sudo -u postgres psql -v ON_ERROR_STOP=1 \
+    -c "ALTER ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASSWORD}';" >/dev/null
+ok "backend/.env written + PostgreSQL password re-synced"
 
 sudo -u "${APP_USER}" python3 -m venv "${APP_DIR}/backend/venv"
 sudo -u "${APP_USER}" "${APP_DIR}/backend/venv/bin/pip" install --upgrade pip

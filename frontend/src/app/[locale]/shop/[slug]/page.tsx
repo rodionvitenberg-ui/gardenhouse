@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { routing } from "@/i18n/routing";
+import { getServerApiUrl } from "@/lib/server-api-url";
 import ProductDetailClient from "./ProductDetailClient";
 
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001/api";
+const API_URL = getServerApiUrl();
 
 async function getProduct(slug: string): Promise<{
   title: string;
