@@ -4,10 +4,9 @@ import createNextIntlPlugin from "next-intl/plugin";
 const withNextIntl = createNextIntlPlugin();
 
 const nextConfig: NextConfig = {
-  // Standalone output — run with: node .next/standalone/server.js
-  // Do NOT use `next start` when this is set (Next 16 warns and misbehaves).
-  // deploy/start_frontend.sh and deploy/deploy.sh prepare public+static copies.
-  output: "standalone",
+  // Use classic `next start` on the VPS (systemd/PM2).
+  // Do NOT set output:"standalone" here — Next 16 refuses `next start` with it,
+  // and standalone server.js has been hanging on /gardenhouse/* in prod.
 
   // Sub-path the app is served from (e.g. "/gardenhouse" in production).
   // Empty string when served at the domain root.

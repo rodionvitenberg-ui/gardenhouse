@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 #
-# start_frontend.sh — start Next.js standalone correctly
-# ======================================================
-# Fixes the classic mistake:
-#   next start  +  output:"standalone"  → broken / wrong
-# Correct:
-#   node .next/standalone/server.js
-#
+# start_frontend.sh — rebuild (if needed) + start Next with `next start`
+# =====================================================================
 #   sudo bash /var/www/gardenhouse/deploy/start_frontend.sh
-#   # or with PM2:
+#   sudo bash /var/www/gardenhouse/deploy/start_frontend.sh --rebuild
 #   sudo bash /var/www/gardenhouse/deploy/start_frontend.sh --pm2
 #
 
@@ -21,86 +16,80 @@ fi
 
 APP_DIR="${APP_DIR:-/var/www/gardenhouse}"
 APP_USER="${APP_USER:-maintest}"
+FE="${APP_DIR}/frontend"
+REBUILD=false
 USE_PM2=false
 for arg in "$@"; do
     case "$arg" in
+        --rebuild) REBUILD=true ;;
         --pm2) USE_PM2=true ;;
     esac
 done
 
-FE="${APP_DIR}/frontend"
-STANDALONE="${FE}/.next/standalone"
-if [ ! -f "${STANDALONE}/server.js" ] && [ -f "${STANDALONE}/frontend/server.js" ]; then
-    STANDALONE="${STANDALONE}/frontend"
+echo "==> Env (basePath must be /gardenhouse)"
+if [ ! -f "${FE}/.env.production" ]; then
+    cp "${FE}/.env.production.example" "${FE}/.env.production"
+    chown "${APP_USER}:${APP_USER}" "${FE}/.env.production"
+fi
+# Force critical production keys
+for kv in \
+    "NEXT_PUBLIC_BASE_PATH=/gardenhouse" \
+    "NEXT_PUBLIC_SITE_URL=https://maintest.site/gardenhouse" \
+    "NEXT_PUBLIC_API_URL=/gardenhouse/api" \
+    "API_URL=http://127.0.0.1:8000/api"
+do
+    key="${kv%%=*}"
+    val="${kv#*=}"
+    if grep -q "^${key}=" "${FE}/.env.production"; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "${FE}/.env.production"
+    else
+        printf '%s=%s\n' "${key}" "${val}" >> "${FE}/.env.production"
+    fi
+done
+grep -E '^(NEXT_PUBLIC_BASE_PATH|NEXT_PUBLIC_API_URL)=' "${FE}/.env.production"
+chown "${APP_USER}:${APP_USER}" "${FE}/.env.production"
+
+# Detect standalone still configured (old build)
+if [ -f "${FE}/next.config.ts" ] && grep -q 'output:\s*["'\'']standalone["'\'']' "${FE}/next.config.ts"; then
+    echo "WARNING: next.config still has output:standalone — remove it and rebuild"
 fi
 
-echo "==> Checking build"
+if [ "${REBUILD}" = true ] || [ ! -d "${FE}/.next" ]; then
+    echo "==> Building frontend (npm run build)"
+    sudo -u "${APP_USER}" bash -c "cd ${FE} && npm install && NODE_ENV=production npm run build"
+else
+    echo "==> Using existing ${FE}/.next (pass --rebuild to force)"
+fi
+
 if [ ! -d "${FE}/.next" ]; then
-    echo "ERROR: no ${FE}/.next — run: sudo -u ${APP_USER} bash -c 'cd ${FE} && npm run build'"
-    exit 1
-fi
-if [ ! -f "${STANDALONE}/server.js" ]; then
-    echo "ERROR: no standalone server.js. Looking:"
-    find "${FE}/.next" -name 'server.js' 2>/dev/null | head -20 || true
-    echo "Rebuild with output standalone, then re-run this script."
+    echo "ERROR: build missing"
     exit 1
 fi
 
-echo "==> Copying public + static into standalone (required)"
-mkdir -p "${STANDALONE}/.next"
-rm -rf "${STANDALONE}/.next/static"
-cp -a "${FE}/.next/static" "${STANDALONE}/.next/static"
-rm -rf "${STANDALONE}/public"
-cp -a "${FE}/public" "${STANDALONE}/public"
-chown -R "${APP_USER}:${APP_USER}" "${FE}/.next"
-echo "  server: ${STANDALONE}/server.js"
-
-echo "==> Stopping old next/pm2 that may hold :3000"
+echo "==> Stopping old processes on :3000"
+systemctl stop gardenhouse-frontend 2>/dev/null || true
 if command -v pm2 >/dev/null 2>&1; then
     sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
-        pm2 delete gardenhouse-frontend 2>/dev/null || true
-    sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
-        pm2 delete gardenhouse-front 2>/dev/null || true
-    pm2 delete gardenhouse-frontend 2>/dev/null || true
+        pm2 delete all 2>/dev/null || true
+    pm2 delete all 2>/dev/null || true
 fi
-systemctl stop gardenhouse-frontend 2>/dev/null || true
 pkill -f "next start" 2>/dev/null || true
-pkill -f "node_modules/next/dist/bin/next" 2>/dev/null || true
+pkill -f "next-server" 2>/dev/null || true
 pkill -f "${FE}/.next/standalone" 2>/dev/null || true
 sleep 1
 
 if [ "${USE_PM2}" = true ]; then
-    echo "==> Starting via PM2 (standalone)"
-    # Write a tiny runtime ecosystem with the resolved STANDALONE path
-    ECO="/tmp/gardenhouse-frontend.pm2.cjs"
-    cat > "${ECO}" <<EOF
-module.exports = {
-  apps: [{
-    name: "gardenhouse-frontend",
-    cwd: "${STANDALONE}",
-    script: "server.js",
-    env: { NODE_ENV: "production", HOSTNAME: "127.0.0.1", PORT: "3000" },
-    instances: 1,
-    exec_mode: "fork",
-    autorestart: true,
-    max_memory_restart: "500M",
-  }],
-};
-EOF
+    echo "==> Start with PM2 (next start)"
     sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
-        pm2 start "${ECO}"
+        pm2 start "${APP_DIR}/deploy/pm2/ecosystem.config.cjs"
     sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
         pm2 save
     sleep 2
     sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
         pm2 status
 else
-    echo "==> Starting via systemd (standalone)"
+    echo "==> Start with systemd (next start)"
     cp "${APP_DIR}/deploy/systemd/gardenhouse-frontend.service" /etc/systemd/system/
-    if [ "${STANDALONE}" != "${FE}/.next/standalone" ]; then
-        sed -i "s|/var/www/gardenhouse/frontend/.next/standalone|${STANDALONE}|g" \
-            /etc/systemd/system/gardenhouse-frontend.service
-    fi
     systemctl daemon-reload
     systemctl enable gardenhouse-frontend.service
     systemctl restart gardenhouse-frontend.service
@@ -110,11 +99,12 @@ fi
 
 echo
 echo "==> Ports"
-ss -tlnp | grep ':3000 ' || echo "WARNING: nothing on :3000"
+ss -tlnp | grep -E ':3000 |:80 ' || true
 echo
-echo "==> Probes"
+echo "==> Probes (expect 200/307/308 on /gardenhouse/ru)"
 for url in \
     "http://127.0.0.1:3000/gardenhouse/ru" \
+    "http://127.0.0.1:3000/gardenhouse" \
     "http://127.0.0.1:3000/ru" \
     "http://127.0.0.1/gardenhouse/ru"
 do
@@ -122,6 +112,10 @@ do
     echo "  ${code}  ${url}"
 done
 echo
-echo "Browser (no SSL yet):  http://maintest.site/gardenhouse"
-echo "Logs systemd: journalctl -u gardenhouse-frontend -f"
-echo "Logs PM2:     sudo -u maintest env PM2_HOME=/home/maintest/.pm2 pm2 logs"
+echo "If :3000/gardenhouse/ru is OK but :80 fails → fix nginx:"
+echo "  sudo cp ${APP_DIR}/deploy/nginx/maintest.site.conf /etc/nginx/sites-available/"
+echo "  sudo ln -sfn /etc/nginx/sites-available/maintest.site.conf /etc/nginx/sites-enabled/"
+echo "  sudo rm -f /etc/nginx/sites-enabled/default"
+echo "  sudo nginx -t && sudo systemctl reload nginx"
+echo
+echo "Browser: http://maintest.site/gardenhouse"
