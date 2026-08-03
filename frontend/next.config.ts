@@ -5,8 +5,8 @@ const withNextIntl = createNextIntlPlugin();
 
 const nextConfig: NextConfig = {
   // Production on VPS: `next start` via systemd (see deploy/).
-  // Never set output:"standalone" — incompatible with next start on Next 16
-  // and previously hung on /gardenhouse/* routes.
+  // Do not enable Next standalone output mode — incompatible with next start
+  // on Next 16 and previously hung on /gardenhouse routes.
 
   // Sub-path in production: NEXT_PUBLIC_BASE_PATH=/gardenhouse
   // Empty string for local `npm run dev` at domain root.

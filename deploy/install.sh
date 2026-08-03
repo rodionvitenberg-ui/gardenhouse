@@ -278,12 +278,26 @@ ensure_env_key "${FRONTEND_ENV}" "API_URL" "http://127.0.0.1:8000/api"
 app_chown "${FRONTEND_ENV}"
 ok "frontend/.env.production (basePath=/gardenhouse)"
 
-# Guard: refuse standalone in next.config (hangs on Next 16)
-if grep -qE 'output:\s*["'\'']standalone["'\'']' "${APP_DIR}/frontend/next.config.ts" 2>/dev/null \
-   || grep -qE 'output:\s*["'\'']standalone["'\'']' "${APP_DIR}/frontend/next.config.js" 2>/dev/null \
-   || grep -qE 'output:\s*["'\'']standalone["'\'']' "${APP_DIR}/frontend/next.config.mjs" 2>/dev/null; then
+# Guard: refuse real standalone output in next.config (hangs on Next 16).
+# Match only a code line, not comments like: // never use output standalone
+has_standalone_output() {
+    local f
+    for f in \
+        "${APP_DIR}/frontend/next.config.ts" \
+        "${APP_DIR}/frontend/next.config.js" \
+        "${APP_DIR}/frontend/next.config.mjs"
+    do
+        [ -f "${f}" ] || continue
+        # Strip // line comments, then look for assignment at start of a line
+        if sed 's|//.*||g' "${f}" | grep -qE '^[[:space:]]*output:[[:space:]]*["'\'']standalone["'\'']'; then
+            return 0
+        fi
+    done
+    return 1
+}
+if has_standalone_output; then
     die "frontend next.config still has output:\"standalone\".
-  Remove it — this project uses \`next start\`, not standalone server.js."
+  Remove that config key — this project uses \`next start\`, not standalone server.js."
 fi
 
 # npm install (not ci — OOM-safe on small VPS)

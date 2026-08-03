@@ -98,8 +98,11 @@ ensure_env_key "${FRONTEND_ENV}" "NEXT_PUBLIC_API_URL" "/gardenhouse/api"
 ensure_env_key "${FRONTEND_ENV}" "API_URL" "http://127.0.0.1:8000/api"
 app_chown "${FRONTEND_ENV}"
 
-if grep -qE 'output:\s*["'\'']standalone["'\'']' "${APP_DIR}/frontend/next.config.ts" 2>/dev/null; then
-    die "next.config has output:standalone — remove it before deploy"
+# Only flag a real config assignment, not comments mentioning "standalone"
+if [ -f "${APP_DIR}/frontend/next.config.ts" ] \
+   && sed 's|//.*||g' "${APP_DIR}/frontend/next.config.ts" \
+        | grep -qE '^[[:space:]]*output:[[:space:]]*["'\'']standalone["'\'']'; then
+    die "next.config has output:standalone — remove that key before deploy"
 fi
 
 sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && npm install"

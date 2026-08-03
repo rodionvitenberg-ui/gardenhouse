@@ -34,8 +34,14 @@ echo
 echo "----- frontend env -----"
 grep -E '^(NEXT_PUBLIC_|API_URL)' "${APP_DIR}/frontend/.env.production" 2>/dev/null || echo "no .env.production"
 echo
-echo "----- next.config standalone? -----"
-grep -n standalone "${APP_DIR}/frontend/next.config.ts" 2>/dev/null || echo "(no standalone — good)"
+echo "----- next.config standalone output? -----"
+if [ -f "${APP_DIR}/frontend/next.config.ts" ] \
+   && sed 's|//.*||g' "${APP_DIR}/frontend/next.config.ts" \
+        | grep -qE '^[[:space:]]*output:[[:space:]]*["'\'']standalone["'\'']'; then
+    echo "FAIL: real output standalone is set"
+else
+    echo "(no standalone output key — good)"
+fi
 echo
 echo "----- probes -----"
 for url in \
