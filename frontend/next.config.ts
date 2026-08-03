@@ -4,7 +4,9 @@ import createNextIntlPlugin from "next-intl/plugin";
 const withNextIntl = createNextIntlPlugin();
 
 const nextConfig: NextConfig = {
-  // Standalone output for Docker — produces .next/standalone/server.js
+  // Standalone output — run with: node .next/standalone/server.js
+  // Do NOT use `next start` when this is set (Next 16 warns and misbehaves).
+  // deploy/start_frontend.sh and deploy/deploy.sh prepare public+static copies.
   output: "standalone",
 
   // Sub-path the app is served from (e.g. "/gardenhouse" in production).

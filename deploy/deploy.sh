@@ -170,6 +170,35 @@ sudo -u "${APP_USER}" env \
     NODE_ENV=production \
     bash -c "cd ${APP_DIR}/frontend && npm run build"
 
+echo "==> [7b/9] Preparing Next.js standalone runtime"
+# output: "standalone" does not bundle public/ or .next/static — copy them in.
+# Without this, CSS/JS/images 404 and the app looks "not working".
+STANDALONE_DIR="${APP_DIR}/frontend/.next/standalone"
+# Monorepo layouts sometimes nest as standalone/frontend/ — detect server.js.
+if [ ! -f "${STANDALONE_DIR}/server.js" ] && [ -f "${STANDALONE_DIR}/frontend/server.js" ]; then
+    STANDALONE_DIR="${STANDALONE_DIR}/frontend"
+fi
+if [ ! -f "${STANDALONE_DIR}/server.js" ]; then
+    echo "ERROR: standalone server.js not found under ${APP_DIR}/frontend/.next/standalone"
+    echo "  Find it: find ${APP_DIR}/frontend/.next/standalone -name server.js"
+    exit 1
+fi
+mkdir -p "${STANDALONE_DIR}/.next"
+# static assets
+rm -rf "${STANDALONE_DIR}/.next/static"
+cp -a "${APP_DIR}/frontend/.next/static" "${STANDALONE_DIR}/.next/static"
+# public/ (videos, logos, fonts)
+rm -rf "${STANDALONE_DIR}/public"
+cp -a "${APP_DIR}/frontend/public" "${STANDALONE_DIR}/public"
+chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}/frontend/.next"
+echo "  Standalone ready: ${STANDALONE_DIR}/server.js"
+# Persist path for the systemd unit if nested
+if [ "${STANDALONE_DIR}" != "${APP_DIR}/frontend/.next/standalone" ]; then
+    echo "  NOTE: server.js is nested at ${STANDALONE_DIR}"
+    # Rewrite unit paths at install time below via sed if needed
+fi
+export STANDALONE_DIR
+
 echo "==> [8/9] Django: migrations, collectstatic, seed"
 sudo -u "${APP_USER}" env \
     PATH="${APP_DIR}/backend/venv/bin:$PATH" \
@@ -192,37 +221,65 @@ sudo -u "${APP_USER}" env \
     "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" seed_journal --settings=core.settings \
     || echo "  WARNING: seed_journal failed (ok if data already present)"
 
-echo "==> [9/9] Installing systemd (backend) + PM2 (frontend) + nginx config"
-# Backend runs under systemd (Gunicorn).
-cp "${APP_DIR}/deploy/systemd/gardenhouse-backend.service" /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable gardenhouse-backend.service
-systemctl restart gardenhouse-backend.service
-
-# Frontend runs under PM2.
-# 1) Fully stop and disable the old systemd unit (if any). Merely removing
-#    the unit file leaves a running `next start` process holding port 3000.
-if systemctl list-unit-files | grep -q '^gardenhouse-frontend.service'; then
-    systemctl disable --now gardenhouse-frontend.service >/dev/null 2>&1 || true
+echo "==> [9/9] Installing systemd (backend + frontend) + nginx config"
+# Stop leftover PM2 / orphan next (older deploys used PM2).
+if command -v pm2 >/dev/null 2>&1; then
+    sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" \
+        pm2 delete gardenhouse-frontend >/dev/null 2>&1 || true
+    sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" \
+        pm2 save --force >/dev/null 2>&1 || true
 fi
-rm -f /etc/systemd/system/gardenhouse-frontend.service
-systemctl daemon-reload
-# 2) Kill ANY orphaned `next start` process (e.g. started manually or by the
-#    old systemd unit before it was disabled). Without this, PM2 fails with
-#    EADDRINUSE and crash-loops forever.
 pkill -f "next start" >/dev/null 2>&1 || true
+pkill -f "node_modules/next/dist/bin/next" >/dev/null 2>&1 || true
 sleep 1
-sudo -u "${APP_USER}" env \
-    PM2_HOME="/home/${APP_USER}/.pm2" \
-    pm2 startOrReload "${APP_DIR}/deploy/pm2/ecosystem.config.cjs" --update-env
-sudo -u "${APP_USER}" env \
-    PM2_HOME="/home/${APP_USER}/.pm2" \
-    pm2 save
-# Auto-start PM2 on boot for the app user (idempotent: the `startup` command
-# creates a systemd unit named pm2-<user>.service).
-sudo -u "${APP_USER}" env \
-    PM2_HOME="/home/${APP_USER}/.pm2" \
-    pm2 startup systemd -u "${APP_USER}" --hp "/home/${APP_USER}" >/dev/null 2>&1 || true
+
+STANDALONE_DIR="${STANDALONE_DIR:-${APP_DIR}/frontend/.next/standalone}"
+if [ ! -f "${STANDALONE_DIR}/server.js" ] && [ -f "${APP_DIR}/frontend/.next/standalone/frontend/server.js" ]; then
+    STANDALONE_DIR="${APP_DIR}/frontend/.next/standalone/frontend"
+fi
+if [ ! -f "${STANDALONE_DIR}/server.js" ]; then
+    echo "ERROR: ${STANDALONE_DIR}/server.js missing — build/prepare step failed"
+    exit 1
+fi
+
+cp "${APP_DIR}/deploy/systemd/gardenhouse-backend.service" /etc/systemd/system/
+cp "${APP_DIR}/deploy/systemd/gardenhouse-frontend.service" /etc/systemd/system/
+# If standalone server.js is nested, fix WorkingDirectory/ExecStart in the unit.
+if [ "${STANDALONE_DIR}" != "${APP_DIR}/frontend/.next/standalone" ]; then
+    sed -i "s|/var/www/gardenhouse/frontend/.next/standalone|${STANDALONE_DIR}|g" \
+        /etc/systemd/system/gardenhouse-frontend.service
+fi
+systemctl daemon-reload
+systemctl enable gardenhouse-backend.service gardenhouse-frontend.service
+systemctl restart gardenhouse-backend.service
+systemctl restart gardenhouse-frontend.service
+
+# Prefer systemd; if operator insists on PM2, ecosystem is also standalone-aware.
+if command -v pm2 >/dev/null 2>&1; then
+    # Keep PM2 clean so it does not fight systemd for :3000
+    sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
+        pm2 delete gardenhouse-frontend >/dev/null 2>&1 || true
+    sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
+        pm2 delete gardenhouse-front >/dev/null 2>&1 || true
+fi
+
+# Fail the deploy if services did not come up.
+sleep 2
+if ! systemctl is-active --quiet gardenhouse-backend.service; then
+    echo "ERROR: gardenhouse-backend failed to start"
+    systemctl status gardenhouse-backend --no-pager -l || true
+    journalctl -u gardenhouse-backend -n 40 --no-pager || true
+    exit 1
+fi
+if ! systemctl is-active --quiet gardenhouse-frontend.service; then
+    echo "ERROR: gardenhouse-frontend failed to start"
+    systemctl status gardenhouse-frontend --no-pager -l || true
+    journalctl -u gardenhouse-frontend -n 40 --no-pager || true
+    exit 1
+fi
+echo "  Backend  : active (systemd)"
+echo "  Frontend : active (systemd, standalone server.js)"
+echo "  Probe    : $(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3000/gardenhouse/ru || echo ERR)"
 
 # Copy the nginx config from the repo — UNLESS the live one was already
 # modified by Certbot. Overwriting it would strip the `listen 443 ssl` block
@@ -261,16 +318,17 @@ systemctl reload nginx
 echo ""
 echo "=== Deploy complete ==="
 echo "  Backend  : http://127.0.0.1:8000  (systemd: gardenhouse-backend)"
-echo "  Frontend : http://127.0.0.1:3000  (pm2: gardenhouse-frontend)"
-echo "  Public   : https://${DOMAIN}/gardenhouse     (→ /gardenhouse/ru)"
-echo "  English  : https://${DOMAIN}/gardenhouse/en"
-echo "  API      : https://${DOMAIN}/gardenhouse/api/"
-echo "  Admin    : https://${DOMAIN}/gardenhouse/admin/"
+echo "  Frontend : http://127.0.0.1:3000  (systemd: gardenhouse-frontend)"
+echo "  Public   : http://${DOMAIN}/gardenhouse     (→ /gardenhouse/ru)"
+echo "  English  : http://${DOMAIN}/gardenhouse/en"
+echo "  API      : http://${DOMAIN}/gardenhouse/api/"
+echo "  Admin    : http://${DOMAIN}/gardenhouse/admin/"
 echo ""
 echo "Smoke checks (on the server):"
+echo "  systemctl status gardenhouse-backend gardenhouse-frontend --no-pager"
 echo "  curl -I http://127.0.0.1:3000/gardenhouse/ru"
 echo "  curl    http://127.0.0.1:8000/api/products/"
-echo "  curl -I https://${DOMAIN}/gardenhouse/ru"
+echo "  curl -I http://${DOMAIN}/gardenhouse/ru"
 echo ""
 echo "Next:"
 echo "  1. Ensure DNS A record: ${DOMAIN} -> ${SERVER_IP}"

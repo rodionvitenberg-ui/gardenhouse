@@ -73,7 +73,7 @@ curl    https://maintest.site/gardenhouse/api/products/
 
 ```bash
 sudo journalctl -u gardenhouse-backend -f --no-pager
-sudo -u maintest bash -c 'export PM2_HOME=/home/maintest/.pm2; pm2 logs gardenhouse-frontend'
+sudo journalctl -u gardenhouse-frontend -f --no-pager
 ```
 
 ---

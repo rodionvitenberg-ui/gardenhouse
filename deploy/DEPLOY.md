@@ -29,9 +29,11 @@ Nginx :80 / :443          ← единственный публичный про
 | Компонент | Как крутится | Порт |
 |-----------|--------------|------|
 | Django (Gunicorn) | systemd `gardenhouse-backend` | 127.0.0.1:8000 |
-| Next.js | PM2 `gardenhouse-frontend` | 127.0.0.1:3000 |
+| Next.js | systemd `gardenhouse-frontend` | 127.0.0.1:3000 |
 | PostgreSQL | системный сервис | 5432 (localhost) |
 | Nginx | reverse proxy + TLS | 80, 443 |
+
+> PM2 больше не используется для фронта (часто «пустой» `pm2 status` из‑за другого пользователя / PATH). Если видите пустой PM2 — это нормально; смотрите `systemctl status gardenhouse-frontend`.
 
 Каталог приложения на сервере: **`/var/www/gardenhouse`**  
 Системный пользователь: **`maintest`**
@@ -160,10 +162,13 @@ sudo bash /var/www/gardenhouse/deploy/deploy.sh
 sudo journalctl -u gardenhouse-backend -f --no-pager
 sudo systemctl restart gardenhouse-backend
 
-# Frontend (PM2)
-sudo -u maintest bash -c 'export PM2_HOME=/home/maintest/.pm2; pm2 logs gardenhouse-frontend'
-sudo -u maintest bash -c 'export PM2_HOME=/home/maintest/.pm2; pm2 restart gardenhouse-frontend'
-sudo -u maintest bash -c 'export PM2_HOME=/home/maintest/.pm2; pm2 status'
+# Frontend (systemd)
+sudo journalctl -u gardenhouse-frontend -f --no-pager
+sudo systemctl restart gardenhouse-frontend
+sudo systemctl status gardenhouse-frontend --no-pager
+
+# Если фронт не поднимался (старый деплой через PM2):
+sudo bash /var/www/gardenhouse/deploy/start_frontend.sh
 
 # Nginx
 sudo nginx -t && sudo systemctl reload nginx

@@ -1,19 +1,26 @@
+# /etc/systemd/system/gardenhouse-frontend.service
+# Next.js standalone server on 127.0.0.1:3000 (behind nginx /gardenhouse).
+#
+# next.config.ts has output: "standalone" — MUST run server.js, not `next start`.
+# deploy.sh prepares .next/standalone with public/ + .next/static after build.
+
 [Unit]
-Description=GardenHouse Next.js Frontend
+Description=GardenHouse Next.js Frontend (standalone)
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
 User=maintest
 Group=maintest
-WorkingDirectory=/var/www/gardenhouse/frontend
-EnvironmentFile=/var/www/gardenhouse/frontend/.env.production
+WorkingDirectory=/var/www/gardenhouse/frontend/.next/standalone
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/npm run start -- -H 127.0.0.1 -p 3000
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+ExecStart=/usr/bin/node /var/www/gardenhouse/frontend/.next/standalone/server.js
 Restart=always
 RestartSec=5
 
-# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

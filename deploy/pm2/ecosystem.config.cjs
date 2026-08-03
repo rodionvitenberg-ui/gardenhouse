@@ -1,30 +1,32 @@
-// PM2 ecosystem config for the GardenHouse Next.js frontend.
-// Started by deploy/deploy.sh via:
-//   pm2 startOrReload /var/www/gardenhouse/deploy/pm2/ecosystem.config.cjs
+// PM2 ecosystem — GardenHouse Next.js (standalone output)
 //
-// The app listens on 127.0.0.1:3000, behind nginx (location ^~ /gardenhouse).
+// next.config has `output: "standalone"`. Do NOT run `next start`.
+// Correct entrypoint: node .next/standalone/server.js
+//
+// After every `next build`, deploy.sh copies public/ and .next/static
+// into the standalone folder (required by Next).
+//
+//   sudo -u maintest env PM2_HOME=/home/maintest/.pm2 \
+//     pm2 startOrReload /var/www/gardenhouse/deploy/pm2/ecosystem.config.cjs
 
 module.exports = {
   apps: [
     {
       name: "gardenhouse-frontend",
-      cwd: "/var/www/gardenhouse/frontend",
-      script: "node_modules/next/dist/bin/next",
-      args: "start -H 127.0.0.1 -p 3000",
+      cwd: "/var/www/gardenhouse/frontend/.next/standalone",
+      script: "server.js",
       env: {
         NODE_ENV: "production",
+        // Bind only localhost — nginx is the public face.
+        HOSTNAME: "127.0.0.1",
+        PORT: "3000",
       },
-      // .env.production is loaded by Next.js automatically (it reads
-      // .env.production during `next start`), no manual dotenv needed.
       instances: 1,
       exec_mode: "fork",
       autorestart: true,
       watch: false,
       max_memory_restart: "500M",
-      time: true, // timestamped logs
-      // Give `next start` time to release port 3000 on restart.
-      // wait_ready must stay false: Next.js does not call process.send('ready'),
-      // so wait_ready:true would time out and crash-loop the process.
+      time: true,
       kill_timeout: 10000,
       listen_timeout: 15000,
       wait_ready: false,
