@@ -35,6 +35,9 @@ id maintest
 
 - **Без PM2.** Только systemd.
 - **Без `output: "standalone"`.** Только `next start`.
+- **Сборка только через webpack** (`next build --webpack`).  
+  Turbopack production-build на Next 16.2 зависает на `/gardenhouse/ru` (timeout 0 bytes),  
+  при этом `/gardenhouse` → 308 и `/ru` → 404 выглядят «почти ок».
 - Frontend: `NEXT_PUBLIC_BASE_PATH=/gardenhouse`.
 
 ## Чистая ОС — с нуля
