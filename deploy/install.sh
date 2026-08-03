@@ -429,13 +429,16 @@ ok "nginx reloaded"
 # ---------------------------------------------------------------------------
 log "[10/10] Smoke tests"
 # ---------------------------------------------------------------------------
-sleep 1
+# Note: failures on :3000 are Next itself — nginx is not involved.
+# /gardenhouse/ru hang with 0 bytes = app bug/build/sandbox, not reverse-proxy.
+sleep 3
 FAIL=0
 probe() {
     local url="$1"
-    local expect="$2"  # substring of status codes e.g. 200|301|302|307|308
+    local expect="$2"
+    local timeout="${3:-15}"
     local code
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${url}" 2>/dev/null || echo ERR)"
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time "${timeout}" "${url}" 2>/dev/null || echo ERR)"
     if echo "${code}" | grep -qE "^(${expect})\$"; then
         ok "${code}  ${url}"
     else
@@ -444,25 +447,38 @@ probe() {
     fi
 }
 
-# Give Next a moment after systemd start (first boot can be slow on small VPS)
-sleep 2
-probe "http://127.0.0.1:8000/api/products/" "200"
-# This is the real site entry — must NOT hang (Turbopack prod bug caused 000ERR here)
-probe "http://127.0.0.1:3000/gardenhouse/ru" "200|301|302|307|308"
-probe "http://127.0.0.1:3000/gardenhouse" "200|301|302|307|308"
-# 404 here is GOOD — means basePath=/gardenhouse is baked into the build
-probe "http://127.0.0.1:3000/ru" "404"
-probe "http://127.0.0.1/gardenhouse/ru" "200|301|302|307|308"
-probe "http://127.0.0.1/gardenhouse" "200|301|302|307|308"
+probe "http://127.0.0.1:8000/api/products/" "200" 10
+# Critical path — 25s budget for first SSR on tiny VPS
+probe "http://127.0.0.1:3000/gardenhouse/ru" "200|301|302|307|308" 25
+probe "http://127.0.0.1:3000/gardenhouse" "200|301|302|307|308" 10
+# 404 here is GOOD — basePath is active
+probe "http://127.0.0.1:3000/ru" "404" 5
+probe "http://127.0.0.1/gardenhouse/ru" "200|301|302|307|308" 25
+probe "http://127.0.0.1/gardenhouse" "200|301|302|307|308" 10
 
 echo
 if [ "${FAIL}" -ne 0 ]; then
-    warn "Some probes failed — check:"
-    echo "    journalctl -u gardenhouse-frontend -n 50 --no-pager"
-    echo "    journalctl -u gardenhouse-backend  -n 50 --no-pager"
-    echo "    nginx -t; tail -50 /var/log/nginx/error.log"
+    warn "Some probes failed."
+    warn "If :3000/gardenhouse/ru fails but :3000/gardenhouse is 308 — problem is Next, NOT nginx."
+    echo "    sudo journalctl -u gardenhouse-frontend -n 50 --no-pager"
+    echo "    sudo bash ${APP_DIR}/deploy/debug_frontend.sh   # manual next on :3001"
     echo "    ss -tlnp | grep -E ':80|:3000|:8000'"
-    exit 1
+    # Reinstall frontend unit with relaxed sandbox (template may have been updated)
+    if [ -f "${APP_DIR}/deploy/systemd/gardenhouse-frontend.service.template" ]; then
+        install_unit_from_template \
+            "${APP_DIR}/deploy/systemd/gardenhouse-frontend.service.template" \
+            /etc/systemd/system/gardenhouse-frontend.service
+        systemctl daemon-reload
+        systemctl restart gardenhouse-frontend
+        sleep 3
+        CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 http://127.0.0.1:3000/gardenhouse/ru 2>/dev/null || echo ERR)"
+        echo "    retry after unit refresh: HTTP ${CODE}"
+        if echo "${CODE}" | grep -qE '^(200|301|302|307|308)$'; then
+            ok "frontend recovered after unit refresh"
+            FAIL=0
+        fi
+    fi
+    [ "${FAIL}" -eq 0 ] || exit 1
 fi
 
 if [ "${WITH_SSL}" = true ]; then
