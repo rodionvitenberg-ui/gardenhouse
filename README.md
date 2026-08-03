@@ -24,12 +24,17 @@ sudo mkdir -p /var/www
 sudo git clone https://github.com/rodionvitenberg-ui/gardenhouse.git /var/www/gardenhouse
 cd /var/www/gardenhouse
 
-sudo bash deploy/install.sh          # всё: пакеты, БД, build, nginx, systemd
-# sudo bash deploy/install.sh --skip-ufw   # если порты открыты в панели Webdock
+# must show: "build": "next build --webpack"
+grep build frontend/package.json
+
+sudo bash deploy/install.sh          # всё: пакеты, БД, webpack-build, nginx, systemd
+# sudo bash deploy/install.sh --skip-ufw
 
 # когда DNS A → этот сервер:
 sudo bash deploy/setup_ssl.sh
 ```
+
+Переустановка с нуля (если предыдущий деплой «поехал»): снести `/var/www/gardenhouse` + units, снова clone + `install.sh` — см. [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 Сайт до SSL: **`http://maintest.site/gardenhouse`**  
 После SSL: **`https://maintest.site/gardenhouse`**

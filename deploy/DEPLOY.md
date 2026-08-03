@@ -42,32 +42,55 @@ id maintest
 
 ## Чистая ОС — с нуля
 
-Подключитесь по SSH (пользователь с sudo, обычно `maintest`):
+Подключитесь по SSH (пользователь с sudo, обычно `maintest`).
+
+**Runtime-код только в `/var/www/gardenhouse`.** Не используйте `~/gardenhouse` как боевой каталог — systemd смотрит в `/var/www`.
 
 ```bash
-# 1) Клон в рабочий каталог
+# 1) Клон
 sudo mkdir -p /var/www
 sudo git clone https://github.com/rodionvitenberg-ui/gardenhouse.git /var/www/gardenhouse
-sudo chown -R "$(id -u):$(id -g)" /var/www/gardenhouse
-
-# 2) Полная установка (пакеты, БД, build, nginx, сервисы)
 cd /var/www/gardenhouse
+
+# 2) До install — обязательная проверка webpack
+grep build frontend/package.json
+# ожидаем: "build": "next build --webpack"
+
+# 3) Полная установка (пакеты, БД, webpack-build, nginx, systemd + smoke)
 sudo bash deploy/install.sh
+# sudo bash deploy/install.sh --skip-ufw   # порты уже в панели Webdock
 
-# Если Webdock-firewall в панели уже открывает 80/443:
-# sudo bash deploy/install.sh --skip-ufw
-
-# 3) Когда DNS A-запись maintest.site → IP сервера готова:
+# 4) Когда DNS A maintest.site → IP сервера:
 sudo bash deploy/setup_ssl.sh
 ```
 
-После `install.sh` (ещё без SSL) откройте:
+После `install.sh` (ещё без SSL): `http://maintest.site/gardenhouse`
 
-```
-http://maintest.site/gardenhouse
-```
+В логе build должно быть **`(webpack)`**.  
+Install **упадёт**, если `/gardenhouse/ru` hang (Turbopack prod bug).
 
-Скрипт **сам** прогоняет smoke-тесты и **упадёт**, если Next/API/nginx не отвечают.
+---
+
+## Переустановка «снести и заново»
+
+БД PostgreSQL можно **не** дропать. Сносим код + units:
+
+```bash
+sudo systemctl stop gardenhouse-frontend gardenhouse-backend 2>/dev/null || true
+sudo rm -f /etc/systemd/system/gardenhouse-*.service
+sudo systemctl daemon-reload
+sudo fuser -k 3000/tcp 2>/dev/null || true
+
+sudo rm -rf /var/www/gardenhouse
+
+sudo git clone https://github.com/rodionvitenberg-ui/gardenhouse.git /var/www/gardenhouse
+cd /var/www/gardenhouse
+grep build frontend/package.json    # next build --webpack
+sudo bash deploy/install.sh
+
+curl -sI --max-time 15 http://127.0.0.1:3000/gardenhouse/ru | head -5
+# → HTTP 200
+```
 
 ## Обновление кода
 

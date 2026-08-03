@@ -300,11 +300,43 @@ if has_standalone_output; then
   Remove that config key — this project uses \`next start\`, not standalone server.js."
 fi
 
+# Force package.json build script (Turbopack prod hangs on /gardenhouse/[locale] — Next 16.2)
+PKG_JSON="${APP_DIR}/frontend/package.json"
+if ! grep -q 'next build --webpack' "${PKG_JSON}" 2>/dev/null; then
+    warn "patching package.json build → next build --webpack"
+    sudo -u "${APP_USER}" python3 - <<PY
+import json
+from pathlib import Path
+p = Path("${PKG_JSON}")
+d = json.loads(p.read_text())
+d.setdefault("scripts", {})["build"] = "next build --webpack"
+p.write_text(json.dumps(d, indent=2) + "\n")
+print(d["scripts"]["build"])
+PY
+fi
+ok "frontend build script: $(grep -E '"build"' "${PKG_JSON}" || true)"
+
 # npm install (not ci — OOM-safe on small VPS)
 sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && npm install"
-# IMPORTANT: must use webpack (see package.json "build": "next build --webpack").
-# Default Turbopack prod build on Next 16.2 hangs forever on /gardenhouse/[locale].
-sudo -u "${APP_USER}" env NODE_ENV=production bash -c "cd ${APP_DIR}/frontend && npm run build"
+# Wipe any prior .next; always build with webpack EXPLICITLY
+sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && rm -rf .next"
+BUILD_LOG="$(mktemp /tmp/gardenhouse-next-build.XXXXXX.log)"
+log "Building frontend: npx next build --webpack  (log: ${BUILD_LOG})"
+if ! sudo -u "${APP_USER}" env NODE_ENV=production \
+    bash -c "cd ${APP_DIR}/frontend && npx next build --webpack" \
+    >"${BUILD_LOG}" 2>&1; then
+    tail -80 "${BUILD_LOG}" || true
+    die "next build --webpack failed (see ${BUILD_LOG})"
+fi
+if grep -q '(webpack)' "${BUILD_LOG}"; then
+    ok "confirmed webpack: $(grep -E 'Next\.js|webpack|Turbopack' "${BUILD_LOG}" | head -3 | tr '\n' '; ')"
+elif grep -qi 'turbopack' "${BUILD_LOG}" && ! grep -qi 'webpack' "${BUILD_LOG}"; then
+    tail -40 "${BUILD_LOG}" || true
+    die "build used Turbopack — abort (would hang on /gardenhouse/ru). Use next build --webpack."
+else
+    warn "webpack banner not found; log head:"
+    head -25 "${BUILD_LOG}" || true
+fi
 
 if [ ! -d "${APP_DIR}/frontend/.next" ]; then
     die "next build did not produce ${APP_DIR}/frontend/.next"
@@ -317,7 +349,7 @@ if [ -f "${APP_DIR}/frontend/.next/required-server-files.json" ]; then
         ok "build has basePath=/gardenhouse"
     fi
 fi
-ok "Next.js built"
+ok "Next.js built (webpack)"
 
 # ---------------------------------------------------------------------------
 log "[8/10] systemd services"
