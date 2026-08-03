@@ -124,12 +124,27 @@ ok "frontend build script: $(grep -E '"build"' "${PKG_JSON}")"
 sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && npm install"
 # Wipe previous .next so a Turbopack build cannot be reused by accident
 sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && rm -rf .next"
-sudo -u "${APP_USER}" env NODE_ENV=production bash -c "cd ${APP_DIR}/frontend && npm run build"
-[ -d "${APP_DIR}/frontend/.next" ] || die "build failed — no .next"
-# Sanity: webpack builds usually mention webpack in BUILD_ID timeline; check traces or just size
-if [ -f "${APP_DIR}/frontend/.next/build-manifest.json" ] || [ -f "${APP_DIR}/frontend/.next/app-build-manifest.json" ]; then
-    ok "build artifacts present under .next"
+# Call next with --webpack EXPLICITLY (do not rely only on package.json)
+BUILD_LOG="$(mktemp /tmp/gardenhouse-next-build.XXXXXX.log)"
+log "Building frontend with: npx next build --webpack  (log: ${BUILD_LOG})"
+if ! sudo -u "${APP_USER}" env NODE_ENV=production \
+    bash -c "cd ${APP_DIR}/frontend && npx next build --webpack" \
+    >"${BUILD_LOG}" 2>&1; then
+    tail -80 "${BUILD_LOG}" || true
+    die "next build --webpack failed (see ${BUILD_LOG})"
 fi
+# Prove bundler — Turbopack line must not be the active one without webpack
+if grep -q '(webpack)' "${BUILD_LOG}"; then
+    ok "confirmed webpack build ($(grep -E 'Next.js|webpack|Turbopack' "${BUILD_LOG}" | head -5 | tr '\n' ' ; '))"
+elif grep -qi 'turbopack' "${BUILD_LOG}" && ! grep -q 'webpack' "${BUILD_LOG}"; then
+    tail -40 "${BUILD_LOG}" || true
+    die "build used Turbopack instead of webpack — aborting (would hang on /gardenhouse/ru)"
+else
+    warn "could not confirm webpack banner in log — showing head:"
+    head -30 "${BUILD_LOG}" || true
+fi
+[ -d "${APP_DIR}/frontend/.next" ] || die "build failed — no .next"
+ok "build artifacts present under .next"
 
 # ---------------------------------------------------------------------------
 log "[5/7] Refresh systemd units (User/Group from OS)"
