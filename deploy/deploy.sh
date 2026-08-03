@@ -105,9 +105,31 @@ if [ -f "${APP_DIR}/frontend/next.config.ts" ] \
     die "next.config has output:standalone — remove that key before deploy"
 fi
 
+# Force webpack build script — Turbopack prod hang on /gardenhouse/[locale] (Next 16.2)
+PKG_JSON="${APP_DIR}/frontend/package.json"
+if ! grep -q 'next build --webpack' "${PKG_JSON}"; then
+    warn "package.json build script missing --webpack — patching in place"
+    sudo -u "${APP_USER}" python3 - <<PY
+import json
+from pathlib import Path
+p = Path("${PKG_JSON}")
+data = json.loads(p.read_text())
+data.setdefault("scripts", {})["build"] = "next build --webpack"
+p.write_text(json.dumps(data, indent=2) + "\n")
+print("patched build -> next build --webpack")
+PY
+fi
+ok "frontend build script: $(grep -E '"build"' "${PKG_JSON}")"
+
 sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && npm install"
+# Wipe previous .next so a Turbopack build cannot be reused by accident
+sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && rm -rf .next"
 sudo -u "${APP_USER}" env NODE_ENV=production bash -c "cd ${APP_DIR}/frontend && npm run build"
 [ -d "${APP_DIR}/frontend/.next" ] || die "build failed — no .next"
+# Sanity: webpack builds usually mention webpack in BUILD_ID timeline; check traces or just size
+if [ -f "${APP_DIR}/frontend/.next/build-manifest.json" ] || [ -f "${APP_DIR}/frontend/.next/app-build-manifest.json" ]; then
+    ok "build artifacts present under .next"
+fi
 
 # ---------------------------------------------------------------------------
 log "[5/7] Refresh systemd units (User/Group from OS)"
@@ -149,7 +171,6 @@ sleep 1
 
 systemctl restart gardenhouse-backend
 systemctl restart gardenhouse-frontend
-sleep 2
 
 systemctl is-active --quiet gardenhouse-backend || die "backend inactive"
 systemctl is-active --quiet gardenhouse-frontend || {
@@ -157,11 +178,47 @@ systemctl is-active --quiet gardenhouse-frontend || {
     die "frontend inactive"
 }
 
-CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3000/gardenhouse/ru 2>/dev/null || echo ERR)"
-echo "    probe frontend: HTTP ${CODE}"
+# Wait until port is open, then retry HTTP (first paint can be slow on small VPS)
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if ss -tln | grep -q '127.0.0.1:3000'; then
+        break
+    fi
+    sleep 1
+done
+
+CODE="ERR"
+for i in 1 2 3 4 5 6; do
+    CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 http://127.0.0.1:3000/gardenhouse/ru 2>/dev/null || echo ERR)"
+    echo "    probe frontend try ${i}: HTTP ${CODE}"
+    if echo "${CODE}" | grep -qE '^(200|301|302|307|308)$'; then
+        break
+    fi
+    # Turbopack hang returns 000 / timeout — no point hammering forever after first long wait
+    if [ "${CODE}" = "000" ] || [ "${CODE}" = "000ERR" ] || [ "${CODE}" = "ERR" ]; then
+        sleep 2
+    else
+        sleep 1
+    fi
+done
+
 if ! echo "${CODE}" | grep -qE '^(200|301|302|307|308)$'; then
+    warn "frontend probe failed (${CODE})"
+    echo "    --- diagnostics ---"
+    echo "    package.json build: $(grep -E '"build"' "${APP_DIR}/frontend/package.json" || true)"
+    echo "    WorkingDirectory unit:"
+    systemctl cat gardenhouse-frontend 2>/dev/null | grep -E 'WorkingDirectory|ExecStart|User=' || true
+    ss -tlnp | grep -E ':3000|:8000|:80 ' || true
+    echo "    curl -v (8s):"
+    curl -v --max-time 8 http://127.0.0.1:3000/gardenhouse/ru 2>&1 | tail -30 || true
+    echo "    /gardenhouse (should 308):"
+    curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 http://127.0.0.1:3000/gardenhouse || true
+    echo "    /ru (should 404 if basePath ok):"
+    curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 http://127.0.0.1:3000/ru || true
     journalctl -u gardenhouse-frontend -n 40 --no-pager || true
-    die "frontend probe failed (${CODE})"
+    die "frontend probe failed (${CODE}).
+  If /gardenhouse/ru hangs but /ru is 404: rebuild used Turbopack — need next build --webpack.
+  Check: grep build ${APP_DIR}/frontend/package.json
+  Manual: cd ${APP_DIR}/frontend && sudo -u ${APP_USER} rm -rf .next && sudo -u ${APP_USER} npm run build && sudo systemctl restart gardenhouse-frontend"
 fi
 
 API="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8000/api/products/ 2>/dev/null || echo ERR)"
@@ -172,5 +229,6 @@ echo "    probe nginx:    HTTP ${NGX}"
 
 echo
 echo "=== Deploy OK ==="
+echo "  App dir    : ${APP_DIR}"
 echo "  http://${DOMAIN}/gardenhouse/ru"
 echo "  User:Group = ${APP_USER}:${APP_GROUP}"
