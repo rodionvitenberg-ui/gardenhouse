@@ -4,12 +4,12 @@ import createNextIntlPlugin from "next-intl/plugin";
 const withNextIntl = createNextIntlPlugin();
 
 const nextConfig: NextConfig = {
-  // Use classic `next start` on the VPS (systemd/PM2).
-  // Do NOT set output:"standalone" here — Next 16 refuses `next start` with it,
-  // and standalone server.js has been hanging on /gardenhouse/* in prod.
+  // Production on VPS: `next start` via systemd (see deploy/).
+  // Never set output:"standalone" — incompatible with next start on Next 16
+  // and previously hung on /gardenhouse/* routes.
 
-  // Sub-path the app is served from (e.g. "/gardenhouse" in production).
-  // Empty string when served at the domain root.
+  // Sub-path in production: NEXT_PUBLIC_BASE_PATH=/gardenhouse
+  // Empty string for local `npm run dev` at domain root.
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || "",
   images: {
     remotePatterns: [

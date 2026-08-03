@@ -1,114 +1,75 @@
 # GardenHouse — Father's Garden
 
-Поместье «Сад Отца»: гостевой дом, питомник многолетних растений, журнал садовода.
-
-**Прод (тест-домен):** [https://maintest.site/gardenhouse](https://maintest.site/gardenhouse)  
-Локали: **ru** (по умолчанию), **en** → `/gardenhouse/ru`, `/gardenhouse/en`.
-
----
-
-## Архитектура
-
-```
-gardenhouse/
-├── backend/                  # Django REST API + admin
-│   ├── core/                 # settings, urls, wsgi
-│   ├── shop/ guests/ journal/
-│   ├── scripts/setup_db.sh
-│   └── requirements.txt
-├── frontend/                 # Next.js 16 + next-intl + Tailwind
-│   ├── src/app/[locale]/     # страницы ru/en
-│   ├── src/i18n/             # routing, navigation, messages
-│   ├── src/lib/api.ts        # axios → Django
-│   └── next.config.ts        # basePath из NEXT_PUBLIC_BASE_PATH
-├── deploy/                   # скрипты деплоя (см. deploy/DEPLOY.md)
-└── README.md
-```
-
-Фронт и бэк общаются только через REST. На проде nginx отдаёт всё под `/gardenhouse`.
+Гостевой дом + питомник.  
+**Прод (тест):** [http://maintest.site/gardenhouse](http://maintest.site/gardenhouse)  
+Локали: **ru** (default), **en**.
 
 ---
 
-## Деплой на сервер (скриптами)
+## Стек
 
-Подробно: **[`deploy/DEPLOY.md`](deploy/DEPLOY.md)**.
+- **backend/** — Django REST + admin (Gunicorn)
+- **frontend/** — Next.js 16 + next-intl + Tailwind (`basePath=/gardenhouse` в prod)
+- **deploy/** — установка на Webdock/Ubuntu только скриптами
 
-На сервере (sudo), один раз:
+---
+
+## Деплой на чистый сервер (Webdock)
+
+Пользователь профиля (часто `maintest`) имеет primary group **`sudo`**, не `maintest`.  
+Скрипты это учитывают автоматически.
 
 ```bash
-git clone https://github.com/rodionvitenberg-ui/gardenhouse.git
-cd gardenhouse
+sudo mkdir -p /var/www
+sudo git clone https://github.com/rodionvitenberg-ui/gardenhouse.git /var/www/gardenhouse
+cd /var/www/gardenhouse
 
-sudo bash deploy/setup_server.sh   # nginx, postgres, node, pm2, user maintest
-sudo bash deploy/create_db.sh      # БД gardenhouse_db
-sudo bash deploy/deploy.sh         # build + migrate + сервисы + nginx
-sudo bash deploy/setup_ssl.sh      # Let's Encrypt (когда DNS готов)
+sudo bash deploy/install.sh          # всё: пакеты, БД, build, nginx, systemd
+# sudo bash deploy/install.sh --skip-ufw   # если порты открыты в панели Webdock
+
+# когда DNS A → этот сервер:
+sudo bash deploy/setup_ssl.sh
 ```
 
-Обновление кода:
+Сайт до SSL: **`http://maintest.site/gardenhouse`**  
+После SSL: **`https://maintest.site/gardenhouse`**
+
+Обновления:
 
 ```bash
 sudo bash /var/www/gardenhouse/deploy/deploy.sh
 ```
 
-### Схема трафика
-
-```
-Интернет → Nginx (80/443)
-             ├── /gardenhouse/api|admin  → Gunicorn :8000
-             ├── /gardenhouse/media|static → файлы
-             └── /gardenhouse/*          → Next.js :3000 (next-intl)
-```
-
-Приложение лежит в `/var/www/gardenhouse`, процессы — от пользователя `maintest`.
-
-### Проверка
-
-```bash
-curl -I https://maintest.site/gardenhouse/ru
-curl    https://maintest.site/gardenhouse/api/products/
-```
-
-Логи:
-
-```bash
-sudo journalctl -u gardenhouse-backend -f --no-pager
-sudo journalctl -u gardenhouse-frontend -f --no-pager
-```
+Подробности: **[deploy/DEPLOY.md](deploy/DEPLOY.md)**  
+Диагностика: `sudo bash deploy/healthcheck.sh`
 
 ---
 
 ## Локальная разработка
 
-### Backend
-
 ```bash
+# Backend
 cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python manage.py migrate --noinput
-python manage.py runserver
-```
+python manage.py migrate && python manage.py runserver
 
-### Frontend
-
-```bash
+# Frontend (без basePath)
 cd frontend
 npm install
 cp .env.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:8000/api
 npm run dev
 ```
 
-Локально **без** basePath: `http://localhost:3000/ru`.
-
-На проде basePath `/gardenhouse` задаётся через `frontend/.env.production` (см. `.env.production.example`).
+Локально: `http://localhost:3000/ru`
 
 ---
 
-## Полезные ссылки
+## Сервисы на сервере
 
-- [Next.js](https://nextjs.org/docs)
-- [next-intl](https://next-intl.dev/)
-- [Django](https://docs.djangoproject.com/)
-- [PM2](https://pm2.keymetrics.io/)
+| Unit | Порт |
+|------|------|
+| `gardenhouse-backend` | 127.0.0.1:8000 |
+| `gardenhouse-frontend` | 127.0.0.1:3000 |
+| `nginx` | 80 / 443 → `/gardenhouse` |

@@ -1,56 +1,70 @@
 #!/usr/bin/env bash
 #
-# setup_ssl.sh — Let's Encrypt certificate for maintest.site
-# ==========================================================
-# Run as root (or with sudo). Requires:
-#   - DNS A record: maintest.site -> 193.181.216.124
-#   - nginx config from deploy/nginx/maintest.site.conf already installed
-#   - port 80 (and 443) reachable through the firewall
+# setup_ssl.sh — Let's Encrypt for maintest.site (run after DNS works)
+# ==================================================================
+#   sudo bash /var/www/gardenhouse/deploy/setup_ssl.sh
 #
-# Usage:
-#   sudo bash setup_ssl.sh
 
 set -euo pipefail
 
-# certbot needs root to write to /etc/letsencrypt and reload nginx.
-if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: run as root (or with full sudo):"
-    echo "  sudo bash $0"
-    exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+
+require_root
+resolve_app_identity
+
+if ! command_exists certbot; then
+    apt-get update -y
+    apt-get install -y certbot python3-certbot-nginx
 fi
 
-DOMAIN="maintest.site"
-
-echo "==> Verifying DNS resolves to this server"
-SERVER_IP="$(curl -4 -fsSL ifconfig.me || echo '')"
-DNS_IP="$(getent hosts "${DOMAIN}" | awk '{print $1}' | head -n1 || echo '')"
-if [ -z "${DNS_IP}" ]; then
-    echo "ERROR: ${DOMAIN} does not resolve via DNS."
-    echo "  Add an A record: ${DOMAIN} -> 193.181.216.124 (or your server IP)"
-    exit 1
-fi
-if [ -n "${SERVER_IP}" ] && [ "${DNS_IP}" != "${SERVER_IP}" ]; then
-    echo "WARNING: ${DOMAIN} resolves to ${DNS_IP}, but this server's public IP is ${SERVER_IP}."
-    echo "  Continuing anyway — certbot will validate via HTTP-01."
-fi
-echo "  ${DOMAIN} -> ${DNS_IP}"
-
-echo "==> Preparing certificate challenge directory"
 mkdir -p /var/www/certbot
 
-echo "==> Running certbot (--nginx)"
+log "DNS check for ${DOMAIN}"
+SERVER_IP_LIVE="$(curl -4 -fsSL --max-time 5 ifconfig.me 2>/dev/null || echo '')"
+DNS_IP="$(getent ahostsv4 "${DOMAIN}" 2>/dev/null | awk '{print $1}' | head -1 || true)"
+DNS_IP="${DNS_IP:-$(getent hosts "${DOMAIN}" 2>/dev/null | awk '{print $1}' | head -1 || true)}"
+
+if [ -z "${DNS_IP}" ]; then
+    die "${DOMAIN} does not resolve. Add A record → this server, wait for DNS, retry."
+fi
+ok "${DOMAIN} → ${DNS_IP}"
+if [ -n "${SERVER_IP_LIVE}" ] && [ "${DNS_IP}" != "${SERVER_IP_LIVE}" ]; then
+    warn "DNS (${DNS_IP}) != this host public IP (${SERVER_IP_LIVE}). Certbot may fail."
+fi
+
+# Ensure nginx is up and serving on 80
+systemctl is-active --quiet nginx || systemctl start nginx
+nginx -t
+
+log "certbot --nginx"
 certbot --nginx \
     -d "${DOMAIN}" \
+    -d "www.${DOMAIN}" \
     --redirect \
     --non-interactive \
     --agree-tos \
-    --register-unsafely-without-email
+    --register-unsafely-without-email \
+    || certbot --nginx \
+        -d "${DOMAIN}" \
+        --redirect \
+        --non-interactive \
+        --agree-tos \
+        --register-unsafely-without-email
 
-echo "==> Testing auto-renewal"
-certbot renew --dry-run
+# After SSL, ensure Django still does not do its own redirect
+BACKEND_ENV="${APP_DIR}/backend/.env"
+if [ -f "${BACKEND_ENV}" ]; then
+    ensure_env_key "${BACKEND_ENV}" "DJANGO_SECURE_SSL_REDIRECT" "False"
+    ensure_env_key "${BACKEND_ENV}" "DJANGO_CSRF_TRUSTED_ORIGINS" "https://${DOMAIN}"
+    ensure_env_key "${BACKEND_ENV}" "CORS_ALLOWED_ORIGINS" "https://${DOMAIN}"
+    systemctl restart gardenhouse-backend || true
+fi
 
-echo ""
-echo "=== SSL setup complete ==="
-echo "  The site is now served over HTTPS:"
-echo "    https://${DOMAIN}/gardenhouse"
-echo "  Certificates auto-renew via the certbot systemd timer."
+certbot renew --dry-run || warn "renew dry-run failed (timer may still work later)"
+
+echo
+echo "=== SSL OK ==="
+echo "  https://${DOMAIN}/gardenhouse"
+echo "  https://${DOMAIN}/gardenhouse/ru"

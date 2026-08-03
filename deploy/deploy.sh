@@ -1,300 +1,173 @@
 #!/usr/bin/env bash
 #
-# deploy.sh — full deployment of GardenHouse
-# ===========================================
-# Run as root (or with sudo). Assumes setup_server.sh and create_db.sh
-# were already run:
-#   sudo bash setup_server.sh
-#   sudo bash create_db.sh
+# deploy.sh — update already-installed GardenHouse (pull, build, restart)
+# ======================================================================
+# Prerequisites: install.sh has been run once.
 #
-# What it does:
-#   1. Clones/pulls the code into /var/www/gardenhouse
-#   2. Creates backend/.env from the production template (generating a
-#      one-time Django SECRET_KEY; never overwrites existing secrets)
-#   3. Creates frontend/.env.production from the template
-#   4. Installs Python deps + Node deps, runs migrations, collectstatic,
-#      seeds the database
-#   5. Installs systemd units and the nginx config, restarts services
+#   sudo bash /var/www/gardenhouse/deploy/deploy.sh
+#   sudo bash deploy/deploy.sh --skip-seed
 #
-# Usage:
-#   sudo bash deploy.sh
-#
-# The repo is PUBLIC/private via HTTPS — if it's a private repo, clone it
-# manually first (as the gardenhouse user) and re-run this script.
 
 set -euo pipefail
 
-# These scripts must run as root: they configure systemd units and nginx,
-# create the app user, and use `sudo -u` internally.
-if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: run as root (or with full sudo):"
-    echo "  sudo bash $0"
-    exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
 
-APP_NAME="gardenhouse"
-APP_USER="maintest"
-APP_DIR="/var/www/${APP_NAME}"
-REPO_URL="https://github.com/rodionvitenberg-ui/gardenhouse.git"
-REPO_BRANCH="main"
+SKIP_SEED=false
+for arg in "$@"; do
+    case "${arg}" in
+        --skip-seed) SKIP_SEED=true ;;
+        -h|--help)
+            sed -n '2,12p' "$0"
+            exit 0
+            ;;
+        *) die "unknown argument: ${arg}" ;;
+    esac
+done
+
+require_root
+resolve_app_identity
+
+if [ ! -d "${APP_DIR}/backend" ] || [ ! -d "${APP_DIR}/frontend" ]; then
+    die "${APP_DIR} does not look installed. Run: sudo bash deploy/install.sh"
+fi
 
 PYTHON_BIN="${APP_DIR}/backend/venv/bin/python"
 PIP_BIN="${APP_DIR}/backend/venv/bin/pip"
-GUNICORN_BIN="${APP_DIR}/backend/venv/bin/gunicorn"
 
-DOMAIN="maintest.site"
-SERVER_IP="193.181.216.124"
-
-echo "==> [1/9] Ensuring app user and directory exist"
-if ! id "${APP_USER}" >/dev/null 2>&1; then
-    echo "  ERROR: user '${APP_USER}' does not exist."
-    echo "  Run setup_server.sh first."
-    exit 1
-fi
-# Ensure the matching group exists and is the user's primary group, so that
-# `chown user:user` doesn't fail with "invalid group" for pre-existing
-# system users whose primary group is nogroup.
-if ! getent group "${APP_USER}" >/dev/null 2>&1; then
-    groupadd --system "${APP_USER}"
-    echo "  Created system group '${APP_USER}'"
-fi
-usermod -g "${APP_USER}" "${APP_USER}" >/dev/null 2>&1 || true
-mkdir -p "${APP_DIR}"
-chown -R "${APP_USER}":"${APP_USER}" "${APP_DIR}"
-
-echo "==> [2/9] Cloning / updating code"
-if [ ! -d "${APP_DIR}/.git" ]; then
-    git clone "${REPO_URL}" "${APP_DIR}"
-    chown -R "${APP_USER}":"${APP_USER}" "${APP_DIR}"
-else
+# ---------------------------------------------------------------------------
+log "[1/7] Update code"
+# ---------------------------------------------------------------------------
+if [ -d "${APP_DIR}/.git" ]; then
     sudo -u "${APP_USER}" git -C "${APP_DIR}" fetch origin
     sudo -u "${APP_USER}" git -C "${APP_DIR}" checkout "${REPO_BRANCH}"
-    sudo -u "${APP_USER}" git -C "${APP_DIR}" pull --ff-only origin "${REPO_BRANCH}"
+    sudo -u "${APP_USER}" git -C "${APP_DIR}" pull --ff-only origin "${REPO_BRANCH}" \
+        || warn "git pull --ff-only failed (local commits?). Continuing with disk code."
+else
+    warn "no .git in ${APP_DIR} — skipped pull (sync code manually)"
 fi
+app_chown "${APP_DIR}"
 
-echo "==> [3/9] Ensuring backend/.env is the production config"
+# ---------------------------------------------------------------------------
+log "[2/7] Backend dependencies + .env guards"
+# ---------------------------------------------------------------------------
 BACKEND_ENV="${APP_DIR}/backend/.env"
-DB_USER_EXPECTED="gardenhouse_user"
-DB_NAME_EXPECTED="gardenhouse_db"
-
-# Recreate .env from the template when it is missing or still holds dev
-# credentials (e.g. a local .env copied to the server with garden_user).
-NEED_RECREATE=0
 if [ ! -f "${BACKEND_ENV}" ]; then
-    NEED_RECREATE=1
-elif ! grep -q "^DB_USER=${DB_USER_EXPECTED}$" "${BACKEND_ENV}" \
-     || ! grep -q "^DB_NAME=${DB_NAME_EXPECTED}$" "${BACKEND_ENV}"; then
-    NEED_RECREATE=1
+    die "missing ${BACKEND_ENV} — run install.sh first"
 fi
-
-if [ "${NEED_RECREATE}" = "1" ]; then
-    cp "${APP_DIR}/backend/.env.production.example" "${BACKEND_ENV}"
-    SECRET_KEY="$(openssl rand -hex 48)"
-    # Replace the placeholder secret with a real generated one
-    sed -i "s|^DJANGO_SECRET_KEY=.*|DJANGO_SECRET_KEY=${SECRET_KEY}|" "${BACKEND_ENV}"
-    echo "  Recreated ${BACKEND_ENV} from the production template with a fresh SECRET_KEY"
-else
-    echo "  ${BACKEND_ENV} already has the production DB credentials — left untouched"
-fi
+ensure_env_key "${BACKEND_ENV}" "DJANGO_SECURE_SSL_REDIRECT" "False"
+ensure_env_key "${BACKEND_ENV}" "DJANGO_FORCE_SCRIPT_NAME" "/gardenhouse"
+ensure_env_key "${BACKEND_ENV}" "DJANGO_DEBUG" "False"
 chmod 600 "${BACKEND_ENV}"
-chown "${APP_USER}":"${APP_USER}" "${BACKEND_ENV}"
+app_chown "${BACKEND_ENV}"
 
-# Ensure the SSL redirect flag is present (False behind nginx) even when the
-# .env already existed — Django would otherwise redirect in an endless loop.
-if ! grep -q "^DJANGO_SECURE_SSL_REDIRECT=" "${BACKEND_ENV}"; then
-    printf 'DJANGO_SECURE_SSL_REDIRECT=False\n' >> "${BACKEND_ENV}"
-    chown "${APP_USER}":"${APP_USER}" "${BACKEND_ENV}"
-    echo "  Added DJANGO_SECURE_SSL_REDIRECT=False to ${BACKEND_ENV}"
+if [ ! -x "${PYTHON_BIN}" ]; then
+    sudo -u "${APP_USER}" python3 -m venv "${APP_DIR}/backend/venv"
 fi
-
-# Ensure the PostgreSQL role exists and the password stored in .env is real
-DB_PASSWORD="$(grep "^DB_PASSWORD=" "${BACKEND_ENV}" | head -n1 | cut -d'=' -f2- || true)"
-if [ -z "${DB_PASSWORD}" ] || [ "${DB_PASSWORD}" = "change-me-generated-by-deploy-script" ]; then
-    DB_PASSWORD="$(openssl rand -hex 24)"
-    sudo -u postgres psql -v ON_ERROR_STOP=1 \
-        -c "ALTER ROLE ${DB_USER_EXPECTED} WITH LOGIN PASSWORD '${DB_PASSWORD}';" >/dev/null
-    if grep -q "^DB_PASSWORD=" "${BACKEND_ENV}"; then
-        sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|" "${BACKEND_ENV}"
-    else
-        printf '\nDB_PASSWORD=%s\n' "${DB_PASSWORD}" >> "${BACKEND_ENV}"
-    fi
-    chown "${APP_USER}":"${APP_USER}" "${BACKEND_ENV}"
-    echo "  Generated a fresh DB password, synced to PostgreSQL and ${BACKEND_ENV}"
-else
-    # Existing password — keep the PostgreSQL role in sync with it.
-    sudo -u postgres psql -v ON_ERROR_STOP=1 \
-        -c "ALTER ROLE ${DB_USER_EXPECTED} WITH LOGIN PASSWORD '${DB_PASSWORD}';" >/dev/null
-    echo "  DB password already set — PostgreSQL role re-synced"
-fi
-
-echo "==> [4/9] Creating frontend/.env.production"
-FRONTEND_ENV="${APP_DIR}/frontend/.env.production"
-if [ ! -f "${FRONTEND_ENV}" ]; then
-    cp "${APP_DIR}/frontend/.env.production.example" "${FRONTEND_ENV}"
-    echo "  Created ${FRONTEND_ENV}"
-else
-    echo "  ${FRONTEND_ENV} already exists — leaving it untouched"
-fi
-# Guard rails: production MUST serve under /gardenhouse (next-intl locales on top).
-# Re-assert critical keys without wiping custom overrides the operator may have added.
-ensure_env_key() {
-    local file="$1" key="$2" value="$3"
-    if grep -q "^${key}=" "${file}"; then
-        sed -i "s|^${key}=.*|${key}=${value}|" "${file}"
-    else
-        printf '%s=%s\n' "${key}" "${value}" >> "${file}"
-    fi
-}
-ensure_env_key "${FRONTEND_ENV}" "NEXT_PUBLIC_BASE_PATH" "/gardenhouse"
-ensure_env_key "${FRONTEND_ENV}" "NEXT_PUBLIC_SITE_URL" "https://${DOMAIN}/gardenhouse"
-ensure_env_key "${FRONTEND_ENV}" "NEXT_PUBLIC_API_URL" "/gardenhouse/api"
-ensure_env_key "${FRONTEND_ENV}" "API_URL" "http://127.0.0.1:8000/api"
-echo "  Ensured basePath=/gardenhouse and API paths in ${FRONTEND_ENV}"
-chown "${APP_USER}":"${APP_USER}" "${FRONTEND_ENV}"
-
-echo "==> [5/9] Installing backend dependencies"
-sudo -u "${APP_USER}" python3 -m venv "${APP_DIR}/backend/venv"
 sudo -u "${APP_USER}" "${PIP_BIN}" install --upgrade pip
 sudo -u "${APP_USER}" "${PIP_BIN}" install -r "${APP_DIR}/backend/requirements.txt"
 
-echo "==> [6/9] Installing frontend dependencies"
-# Use `npm install` (NOT `npm ci`): on small-RAM VPS boxes `npm ci` can be
-# killed by the OOM killer while unpacking, whereas `npm install` reuses the
-# existing node_modules and needs far less memory. The lockfile still governs
-# dependency versions unless package.json changed.
+# ---------------------------------------------------------------------------
+log "[3/7] Django migrate + collectstatic"
+# ---------------------------------------------------------------------------
+sudo -u "${APP_USER}" env PATH="${APP_DIR}/backend/venv/bin:$PATH" \
+    "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" migrate --noinput
+sudo -u "${APP_USER}" env PATH="${APP_DIR}/backend/venv/bin:$PATH" \
+    "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" collectstatic --noinput
+
+if [ "${SKIP_SEED}" != true ]; then
+    sudo -u "${APP_USER}" env PATH="${APP_DIR}/backend/venv/bin:$PATH" \
+        "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" seed_data \
+        || warn "seed_data skipped/failed"
+    sudo -u "${APP_USER}" env PATH="${APP_DIR}/backend/venv/bin:$PATH" \
+        "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" seed_journal \
+        || warn "seed_journal skipped/failed"
+fi
+
+# ---------------------------------------------------------------------------
+log "[4/7] Frontend env + build"
+# ---------------------------------------------------------------------------
+FRONTEND_ENV="${APP_DIR}/frontend/.env.production"
+if [ ! -f "${FRONTEND_ENV}" ]; then
+    cp "${APP_DIR}/frontend/.env.production.example" "${FRONTEND_ENV}"
+fi
+ensure_env_key "${FRONTEND_ENV}" "NEXT_PUBLIC_SITE_URL" "https://${DOMAIN}/gardenhouse"
+ensure_env_key "${FRONTEND_ENV}" "NEXT_PUBLIC_BASE_PATH" "/gardenhouse"
+ensure_env_key "${FRONTEND_ENV}" "NEXT_PUBLIC_API_URL" "/gardenhouse/api"
+ensure_env_key "${FRONTEND_ENV}" "API_URL" "http://127.0.0.1:8000/api"
+app_chown "${FRONTEND_ENV}"
+
+if grep -qE 'output:\s*["'\'']standalone["'\'']' "${APP_DIR}/frontend/next.config.ts" 2>/dev/null; then
+    die "next.config has output:standalone — remove it before deploy"
+fi
+
 sudo -u "${APP_USER}" bash -c "cd ${APP_DIR}/frontend && npm install"
+sudo -u "${APP_USER}" env NODE_ENV=production bash -c "cd ${APP_DIR}/frontend && npm run build"
+[ -d "${APP_DIR}/frontend/.next" ] || die "build failed — no .next"
 
-echo "==> [7/9] Building frontend"
-# Next.js reads .env.production automatically during build.
-# Uses classic `next start` (no output:standalone) — see next.config.ts.
-sudo -u "${APP_USER}" env \
-    NODE_ENV=production \
-    bash -c "cd ${APP_DIR}/frontend && npm run build"
+# ---------------------------------------------------------------------------
+log "[5/7] Refresh systemd units (User/Group from OS)"
+# ---------------------------------------------------------------------------
+install_unit_from_template \
+    "${APP_DIR}/deploy/systemd/gardenhouse-backend.service.template" \
+    /etc/systemd/system/gardenhouse-backend.service
+install_unit_from_template \
+    "${APP_DIR}/deploy/systemd/gardenhouse-frontend.service.template" \
+    /etc/systemd/system/gardenhouse-frontend.service
+systemctl daemon-reload
 
-if [ ! -d "${APP_DIR}/frontend/.next" ]; then
-    echo "ERROR: frontend build did not produce .next/"
-    exit 1
+# ---------------------------------------------------------------------------
+log "[6/7] nginx (skip if certbot-managed)"
+# ---------------------------------------------------------------------------
+NGINX_SRC="${APP_DIR}/deploy/nginx/maintest.site.conf"
+NGINX_AVAIL="/etc/nginx/sites-available/${DOMAIN}.conf"
+if [ -f "${NGINX_AVAIL}" ] && grep -q "managed by Certbot" "${NGINX_AVAIL}"; then
+    warn "nginx conf certbot-managed — left intact"
+else
+    sed -e "s|__APP_DIR__|${APP_DIR}|g" "${NGINX_SRC}" > "${NGINX_AVAIL}"
+    ln -sfn "${NGINX_AVAIL}" "/etc/nginx/sites-enabled/${DOMAIN}.conf"
+    rm -f /etc/nginx/sites-enabled/default
+    nginx -t
+    systemctl reload nginx
+    ok "nginx updated"
 fi
-echo "  Build OK: ${APP_DIR}/frontend/.next"
 
-echo "==> [8/9] Django: migrations, collectstatic, seed"
-sudo -u "${APP_USER}" env \
-    PATH="${APP_DIR}/backend/venv/bin:$PATH" \
-    "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" migrate --noinput \
-    --settings=core.settings
-
-sudo -u "${APP_USER}" env \
-    PATH="${APP_DIR}/backend/venv/bin:$PATH" \
-    "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" collectstatic --noinput \
-    --settings=core.settings
-
-# Seeds are idempotent-ish; never fail the whole deploy on re-seed.
-sudo -u "${APP_USER}" env \
-    PATH="${APP_DIR}/backend/venv/bin:$PATH" \
-    "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" seed_data --settings=core.settings \
-    || echo "  WARNING: seed_data failed (ok if data already present)"
-
-sudo -u "${APP_USER}" env \
-    PATH="${APP_DIR}/backend/venv/bin:$PATH" \
-    "${PYTHON_BIN}" "${APP_DIR}/backend/manage.py" seed_journal --settings=core.settings \
-    || echo "  WARNING: seed_journal failed (ok if data already present)"
-
-echo "==> [9/9] Installing systemd (backend + frontend) + nginx config"
-# Stop leftover PM2 / orphan next so they don't fight systemd for :3000.
-if command -v pm2 >/dev/null 2>&1; then
-    sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
-        pm2 delete all >/dev/null 2>&1 || true
-    sudo -u "${APP_USER}" env PM2_HOME="/home/${APP_USER}/.pm2" PATH="/usr/bin:/usr/local/bin:$PATH" \
-        pm2 save --force >/dev/null 2>&1 || true
+# ---------------------------------------------------------------------------
+log "[7/7] Restart services + probe"
+# ---------------------------------------------------------------------------
+# Free port 3000 from any leftover PM2
+if command_exists pm2; then
+    sudo -u "${APP_USER}" env PM2_HOME="${APP_HOME}/.pm2" pm2 delete all 2>/dev/null || true
+    pm2 kill 2>/dev/null || true
 fi
-pkill -f "next start" >/dev/null 2>&1 || true
-pkill -f "next-server" >/dev/null 2>&1 || true
-pkill -f "node_modules/next/dist/bin/next" >/dev/null 2>&1 || true
+pkill -f "next start" 2>/dev/null || true
 sleep 1
 
-cp "${APP_DIR}/deploy/systemd/gardenhouse-backend.service" /etc/systemd/system/
-cp "${APP_DIR}/deploy/systemd/gardenhouse-frontend.service" /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable gardenhouse-backend.service gardenhouse-frontend.service
-systemctl restart gardenhouse-backend.service
-systemctl restart gardenhouse-frontend.service
-
-# Fail the deploy if services did not come up.
+systemctl restart gardenhouse-backend
+systemctl restart gardenhouse-frontend
 sleep 2
-if ! systemctl is-active --quiet gardenhouse-backend.service; then
-    echo "ERROR: gardenhouse-backend failed to start"
-    systemctl status gardenhouse-backend --no-pager -l || true
-    journalctl -u gardenhouse-backend -n 40 --no-pager || true
-    exit 1
-fi
-if ! systemctl is-active --quiet gardenhouse-frontend.service; then
-    echo "ERROR: gardenhouse-frontend failed to start"
-    systemctl status gardenhouse-frontend --no-pager -l || true
+
+systemctl is-active --quiet gardenhouse-backend || die "backend inactive"
+systemctl is-active --quiet gardenhouse-frontend || {
     journalctl -u gardenhouse-frontend -n 40 --no-pager || true
-    exit 1
-fi
-PROBE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:3000/gardenhouse/ru 2>/dev/null || echo ERR)"
-echo "  Backend  : active (systemd)"
-echo "  Frontend : active (systemd, next start)"
-echo "  Probe    : HTTP ${PROBE}  http://127.0.0.1:3000/gardenhouse/ru"
-if [ "${PROBE}" != "200" ] && [ "${PROBE}" != "307" ] && [ "${PROBE}" != "308" ] && [ "${PROBE}" != "301" ] && [ "${PROBE}" != "302" ]; then
-    echo "WARNING: frontend probe unexpected — check journalctl -u gardenhouse-frontend"
+    die "frontend inactive"
+}
+
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3000/gardenhouse/ru 2>/dev/null || echo ERR)"
+echo "    probe frontend: HTTP ${CODE}"
+if ! echo "${CODE}" | grep -qE '^(200|301|302|307|308)$'; then
+    journalctl -u gardenhouse-frontend -n 40 --no-pager || true
+    die "frontend probe failed (${CODE})"
 fi
 
-# Copy the nginx config from the repo — UNLESS the live one was already
-# modified by Certbot. Overwriting it would strip the `listen 443 ssl` block
-# and certificate paths that `certbot --nginx` injected, breaking HTTPS.
-if [ -f /etc/nginx/sites-available/maintest.site.conf ] \
-   && grep -q "managed by Certbot" /etc/nginx/sites-available/maintest.site.conf; then
-    echo "  /etc/nginx/sites-available/maintest.site.conf already managed by Certbot — leaving HTTPS block intact"
-    # Ensure the root redirect AND the raw-static-assets redirect exist in the
-    # live config (idempotent). Insert them BEFORE `listen 443 ssl;` so they
-    # land inside the HTTPS server block — appending to the end of the file
-    # would place them outside any server block and break `nginx -t`.
-    if ! grep -q "location = /" /etc/nginx/sites-available/maintest.site.conf; then
-        sed -i '/listen 443 ssl;/i \    # Domain root -> the app\n    location = / {\n        return 301 /gardenhouse;\n    }' /etc/nginx/sites-available/maintest.site.conf
-    fi
-    if ! grep -q "location ~\* \^/\(?!gardenhouse" /etc/nginx/sites-available/maintest.site.conf; then
-        sed -i '/listen 443 ssl;/i \    # Raw static assets requested WITHOUT the /gardenhouse prefix (see template for details)\n    location ~* ^/(?!gardenhouse|api|admin|static|media|_next|\.well-known)([^/]+\\.(?:jpg|jpeg|png|gif|webp|svg|mp4|webm|mov|woff2?|ttf|otf|ico|avif|pdf))$ {\n        return 301 /gardenhouse/$1;\n    }' /etc/nginx/sites-available/maintest.site.conf
-    fi
-else
-    cp "${APP_DIR}/deploy/nginx/maintest.site.conf" /etc/nginx/sites-available/maintest.site.conf
-fi
-# Remove ANY conflicting site config (the Ubuntu default site, or any config
-# that already claims our domain). Otherwise nginx may route requests to an
-# older server block and serve 404s from the wrong root.
-for f in /etc/nginx/sites-enabled/*; do
-    [ -e "$f" ] || continue
-    if [ "$(basename "$f")" = "default" ] || grep -q "maintest.site" "$f" 2>/dev/null; then
-        rm -f "$f"
-        echo "  Removed conflicting nginx site: $f"
-    fi
-done
-ln -sf /etc/nginx/sites-available/maintest.site.conf /etc/nginx/sites-enabled/maintest.site.conf
-mkdir -p /var/www/certbot
-nginx -t
-systemctl reload nginx
+API="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8000/api/products/ 2>/dev/null || echo ERR)"
+echo "    probe API:      HTTP ${API}"
 
-echo ""
-echo "=== Deploy complete ==="
-echo "  Backend  : http://127.0.0.1:8000  (systemd: gardenhouse-backend)"
-echo "  Frontend : http://127.0.0.1:3000  (systemd: gardenhouse-frontend)"
-echo "  Public   : http://${DOMAIN}/gardenhouse     (→ /gardenhouse/ru)"
-echo "  English  : http://${DOMAIN}/gardenhouse/en"
-echo "  API      : http://${DOMAIN}/gardenhouse/api/"
-echo "  Admin    : http://${DOMAIN}/gardenhouse/admin/"
-echo ""
-echo "Smoke checks (on the server):"
-echo "  systemctl status gardenhouse-backend gardenhouse-frontend --no-pager"
-echo "  curl -I http://127.0.0.1:3000/gardenhouse/ru"
-echo "  curl    http://127.0.0.1:8000/api/products/"
-echo "  curl -I http://${DOMAIN}/gardenhouse/ru"
-echo ""
-echo "Next:"
-echo "  1. Ensure DNS A record: ${DOMAIN} -> ${SERVER_IP}"
-echo "  2. If needed, create a superuser:"
-echo "       sudo -u ${APP_USER} ${PYTHON_BIN} ${APP_DIR}/backend/manage.py createsuperuser"
-echo "  3. Issue SSL (first deploy only, after DNS works):"
-echo "       sudo bash ${APP_DIR}/deploy/setup_ssl.sh"
-echo "  4. Sync local media if needed:"
-echo "       rsync -av backend/media/ ${APP_USER}@${SERVER_IP}:${APP_DIR}/backend/media/"
+NGX="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1/gardenhouse/ru 2>/dev/null || echo ERR)"
+echo "    probe nginx:    HTTP ${NGX}"
+
+echo
+echo "=== Deploy OK ==="
+echo "  http://${DOMAIN}/gardenhouse/ru"
+echo "  User:Group = ${APP_USER}:${APP_GROUP}"
