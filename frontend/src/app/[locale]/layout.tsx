@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
-const BASE_URL = "https://fathersgarden.kg";
+const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 
 const localeNames: Record<string, string> = {
   en: "en_US",

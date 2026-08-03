@@ -1,31 +1,24 @@
-# /etc/systemd/system/gardenhouse-frontend.service
-# Next.js (standalone) — сервер приложения, слушает 127.0.0.1:3000
-# Только localhost: наружу смотрит nginx.
-#
-# ВАЖНО: NEXT_PUBLIC_* переменные (BASE_PATH, API_URL, SITE_URL) фрагментируются
-# во время `next build` — они лежат в frontend/.env.production. Здесь в рантайме
-# нужен только PORT + HOSTNAME для standalone-сервера.
-
 [Unit]
-Description=Gardenhouse Next.js (standalone)
+Description=GardenHouse Next.js Frontend
 After=network.target
-Wants=network.target
 
 [Service]
 Type=simple
 User=maintest
 Group=maintest
-WorkingDirectory=/home/maintest/gardenhouse/frontend
-Environment=HOSTNAME=127.0.0.1
-Environment=PORT=3000
-ExecStart=/home/maintest/gardenhouse/frontend/.next/standalone/server.js
+WorkingDirectory=/var/www/gardenhouse/frontend
+EnvironmentFile=/var/www/gardenhouse/frontend/.env.production
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run start -- -H 127.0.0.1 -p 3000
 Restart=always
 RestartSec=5
+
+# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ProtectHome=false
-ReadWritePaths=/home/maintest/gardenhouse
+ProtectHome=true
+ReadWritePaths=/var/www/gardenhouse/frontend/.next
 
 [Install]
 WantedBy=multi-user.target

@@ -41,7 +41,12 @@ USE_I18N = True
 
 USE_TZ = True
 
-STATIC_URL = 'static/'
+# When served under a sub-path (FORCE_SCRIPT_NAME=/gardenhouse), static and
+# media URLs must include that prefix so the browser requests
+# /gardenhouse/static/... and /gardenhouse/media/... (nginx locations),
+# not bare /static or /media on the domain root.
+_SCRIPT_PREFIX = (os.getenv('DJANGO_FORCE_SCRIPT_NAME') or '').rstrip('/')
+STATIC_URL = f'{_SCRIPT_PREFIX}/static/' if _SCRIPT_PREFIX else '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -112,7 +117,7 @@ TEMPLATES = [
 ]
 
 # --- Media ---
-MEDIA_URL = '/media/'
+MEDIA_URL = f'{_SCRIPT_PREFIX}/media/' if _SCRIPT_PREFIX else '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # --- Email ---

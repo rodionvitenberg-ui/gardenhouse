@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { routing } from "@/i18n/routing";
 import JournalPageClient from "./JournalPageClient";
 
-const BASE_URL = "https://fathersgarden.kg";
+const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 
 export async function generateMetadata({
   params,

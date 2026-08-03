@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { routing } from "@/i18n/routing";
 import HouseDetailClient from "./HouseDetailClient";
 
-const BASE_URL = "https://gardenhouse.kg";
+const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001/api";
 
 async function getHouse(slug: string): Promise<{
